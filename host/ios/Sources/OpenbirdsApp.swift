@@ -19,18 +19,23 @@ import CBridge
 @main
 struct OpenbirdsApp: App {
     init() {
-        // Hand the bundled lucile.gif bytes to the Koka brain as
-        // soon as the process starts. Koka parses + LZW-decodes once
-        // and caches inside its session; subsequent render calls hit
-        // the cache. Failure here is silent — the renderer falls back
-        // to its checkerboard so the app still draws something.
+        // Read the bundled lucile.gif bytes into memory on the main
+        // thread (cheap — just a memory map / disk read), then ship
+        // the actual parse + LZW-decode work to a background queue.
+        // openbirds_load_gif on a 4 MB animated GIF takes seconds;
+        // doing it inline would freeze the launch UI past iOS's
+        // unresponsive-launch watchdog. The bridge serialises Koka
+        // calls with a mutex; render uses trylock so it stays smooth
+        // (showing a placeholder) while load runs.
         guard let url = Bundle.main.url(forResource: "lucile", withExtension: "gif"),
               let data = try? Data(contentsOf: url) else {
             return
         }
-        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-            guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
-            openbirds_load_gif(base, Int32(data.count))
+        DispatchQueue.global(qos: .userInitiated).async {
+            data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+                openbirds_load_gif(base, Int32(data.count))
+            }
         }
     }
 

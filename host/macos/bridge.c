@@ -18,6 +18,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 
 #include <kklib.h>
 #include "koka_hello.h"
@@ -25,6 +26,15 @@
 #include "runtime.h"
 
 #include "bridge.h"
+
+// Serialise access to the Koka context. kklib's runtime stores
+// thread-local state in `kk_context_t*`, so we must never call into
+// Koka from two threads at once. `g_lock` is taken by every public
+// bridge function. `openbirds_render_frame` uses `trylock` so a
+// concurrent in-progress load doesn't stall the render loop —
+// failing to acquire the lock just paints a placeholder this frame
+// and the next call retries.
+static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 
 // Aggregate Koka module init/done emitted by Koka's exec-mode build.
 // Initialises every transitively imported module (std/core,
@@ -60,6 +70,7 @@ static kk_ref_t borrow_session(kk_context_t* ctx) {
 }
 
 void openbirds_shutdown(void) {
+    pthread_mutex_lock(&g_lock);
     if (g_ctx != NULL) {
         if (g_session_init) {
             kk_ref_drop(g_session, g_ctx);
@@ -69,11 +80,13 @@ void openbirds_shutdown(void) {
         kk_main_end(g_ctx);
         g_ctx = NULL;
     }
+    pthread_mutex_unlock(&g_lock);
 }
 
 // --- string greeter (Stage 1) ----------------------------------------------
 
 const char* openbirds_greeting(void) {
+    pthread_mutex_lock(&g_lock);
     kk_context_t* ctx = ensure_ctx();
     kk_string_t s = kk_koka_hello_greeting(ctx);
     kk_ssize_t len = 0;
@@ -82,6 +95,7 @@ const char* openbirds_greeting(void) {
     memcpy(out, cbuf, (size_t)len);
     out[len] = '\0';
     kk_string_drop(s, ctx);
+    pthread_mutex_unlock(&g_lock);
     return out;
 }
 
@@ -106,11 +120,13 @@ static kk_vector_t bytes_to_vector_int(const uint8_t* data, int32_t len, kk_cont
 
 void openbirds_load_gif(const uint8_t* bytes, int32_t len) {
     if (bytes == NULL || len <= 0) return;
+    pthread_mutex_lock(&g_lock);
     kk_context_t* ctx = ensure_ctx();
     kk_ref_t      s   = borrow_session(ctx);
     kk_vector_t   v   = bytes_to_vector_int(bytes, len, ctx);
     kk_runtime_load_gif(s, v, ctx);
     // load_gif consumes both s and v per Koka calling conventions.
+    pthread_mutex_unlock(&g_lock);
 }
 
 // --- pixel framebuffer ------------------------------------------------------
@@ -126,6 +142,21 @@ void openbirds_render_frame(double now_seconds,
                             int32_t width_px, int32_t height_px,
                             uint8_t* out_buffer) {
     if (out_buffer == NULL || width_px <= 0 || height_px <= 0) return;
+
+    // trylock: if a load is in flight on a background thread, paint a
+    // visible placeholder for this frame instead of blocking the
+    // display refresh. The next render retries.
+    if (pthread_mutex_trylock(&g_lock) != 0) {
+        // Loading-state placeholder: opaque dark grey RGBA.
+        const size_t expected = (size_t)width_px * (size_t)height_px * 4u;
+        for (size_t i = 0; i < expected; i += 4) {
+            out_buffer[i + 0] = 24;
+            out_buffer[i + 1] = 24;
+            out_buffer[i + 2] = 32;
+            out_buffer[i + 3] = 255;
+        }
+        return;
+    }
 
     kk_context_t* ctx = ensure_ctx();
     kk_ref_t      s   = borrow_session(ctx);
@@ -146,4 +177,5 @@ void openbirds_render_frame(double now_seconds,
     }
 
     kk_vector_drop(v, ctx);
+    pthread_mutex_unlock(&g_lock);
 }

@@ -37,33 +37,33 @@ fun checkerboard-at(now : float64, x : pixel-x, y : pixel-y) : rgba
                        else hue-shift(now,  20,  20, 120)
   Rgba(Red(rr), Green(gg), Blue(bb), Alpha(255))
 
-// --- GIF sampler (session has a loaded decoded-gif) -------------------------
+// --- GIF sampler (session has a loaded decoded-frame) ----------------------
 
-fun palette-colour(d : decoded-gif, ix : int) : rgba
-  match d.palette.at(ix)
+fun palette-colour(f : decoded-frame, ix : int) : rgba
+  match f.palette.at(ix)
     Just(c) -> c
     Nothing -> opaque-black
 
-fun gif-pixel-at(d : decoded-gif, x : pixel-x, y : pixel-y, w : width, h : height) : rgba
+fun gif-pixel-at(f : decoded-frame, x : pixel-x, y : pixel-y, w : width, h : height) : rgba
   // Nearest-neighbour scale: map output (x,y) to source frame (gx,gy).
-  val gw = d.width.pixels
-  val gh = d.height.pixels
+  val gw = f.width.pixels
+  val gh = f.height.pixels
   val gx = (x.col * gw) / w.pixels
   val gy = (y.row * gh) / h.pixels
-  match d.pixels.at(gy * gw + gx)
-    Just(pi) -> palette-colour(d, pi)
+  match f.pixels.at(gy * gw + gx)
+    Just(pi) -> palette-colour(f, pi)
     Nothing  -> opaque-black
 
 // --- entry point ------------------------------------------------------------
 
 pub fun frame-rgba(s : session, now : float64, w-px : int, h-px : int)
-        : <read<global>> vector<int8>
+        : <pure, read<global>, write<global>> vector<int8>
   val w = Width(w-px)
   val h = Height(h-px)
-  match current-frame(s)
-    Just(d) ->
+  match current-frame(s, now)
+    Just(f) ->
       build-buffer(w, h) fn(x, y)
-        gif-pixel-at(d, x, y, w, h)
+        gif-pixel-at(f, x, y, w, h)
     Nothing ->
       build-buffer(w, h) fn(x, y)
         checkerboard-at(now, x, y)

@@ -1,78 +1,162 @@
 // koka/runtime.kk — process-lifetime state for the Koka brain.
 //
-// Holds a single decoded GIF (parsed once from bytes Swift hands us
-// at app start) plus the cached integer pixel data of its first
-// frame. The renderer queries `current-frame` per output pixel;
-// absence of a loaded GIF means the renderer falls back to its
-// hardcoded test pattern.
+// Holds the *parsed* GIF89a structure (cheap; one O(n) pass over
+// the bytes) plus a single-slot cache of the most recently decoded
+// frame. The renderer queries `current-frame(session, now)` per
+// frame; if the active frame is already in the cache we hand it
+// back, otherwise we LZW-decode it on demand and update the cache.
+//
+// Why lazy decode: a 3.9 MB animated GIF (Lucile) can have hundreds
+// of frames. Eagerly LZW-decoding all of them at load time on the
+// main thread blocks the UI past iOS's unresponsive-launch
+// watchdog. Even on a background thread it's tens of seconds of
+// up-front cost. Decoding one frame at a time, on demand, is
+// usually under 100 ms per frame for our list-backed LZW — visible
+// as a brief stutter at frame transitions until the LZW path is
+// optimised, but always responsive.
 //
 // State design: rather than a top-level `val` cell hidden behind
-// `unsafe-total` (which would lie about effects to placate the type
-// system), we expose a `session` handle. The C bridge calls
-// `new-session()` exactly once, holds the returned handle for the
+// `unsafe-total`, we expose a `session` handle. The C bridge calls
+// `new-session()` exactly once, holds the returned ref for the
 // process lifetime, and threads it through every subsequent
-// `load-gif` / `current-frame` call. Every effect — the allocation,
-// the read, the write — is visible in the type signatures. Zero
-// escape hatches.
+// `load-gif` / `current-frame` / `frame-rgba` call. Every effect —
+// the allocation, the read, the write — is visible in the type
+// signatures. Zero escape hatches.
 
 module runtime
 
+import std/num/float64
 import pixel
 import gif
 import lzw
 
-// What we cache after a successful parse + LZW decode. Palette is
-// pre-converted to a vector<rgba> so render-time lookup by index is
-// O(1).
-pub struct decoded-gif
+// One decoded frame: post-LZW, post-de-interlace, with palette
+// pre-converted to vector<rgba> for O(1) indexed lookup.
+pub struct decoded-frame
   width    : width
   height   : height
   palette  : vector<rgba>
-  pixels   : vector<int>     // flat row-major palette indices, w*h length
+  pixels   : vector<int>     // flat row-major palette indices, w*h
+  delay-cs : int             // hundredths of a second (10cs = 100ms)
 
-// Process-lifetime mutable cell for the loaded GIF.
-pub alias session = ref<global, maybe<decoded-gif>>
+// What the session holds when a GIF has been parsed: the parsed
+// (but not yet LZW-decoded) frames + the total animation duration
+// + a single-slot mutable cache of the most recently decoded frame.
+//
+// The nested `cache` ref lets the render path memoise across calls
+// without a top-level mutable global. Allocating it costs an
+// `alloc<global>` effect, declared on `load-gif` below.
+pub struct loaded-gif
+  parsed   : gif
+  total-cs : int
+  cache    : ref<global, maybe<(int, decoded-frame)>>
 
-// Allocate a fresh session. Called exactly once by the bridge during
-// app initialisation. The `<alloc<global>>` effect is honestly
-// declared, not hidden.
+pub alias session = ref<global, maybe<loaded-gif>>
+
 pub fun new-session() : alloc<global> session
   ref(Nothing)
 
-// Called by the bridge when Swift has handed us GIF89a file bytes.
-// Parses, decodes the first frame's LZW pixel stream, caches the
-// decoded indices + palette so the render path is O(1) per pixel.
+// Compute a frame's animation delay (centiseconds) without LZW.
+// 0 → 10 (the GIF spec lets 0 mean "as fast as possible"; we clamp
+// to a sane web-default to avoid runaway loops).
+fun frame-delay-cs(f : gif-frame) : int
+  match f.control-ext
+    Just(g) ->
+      val cs = g.delay.cs
+      if cs == 0 then 10 else cs
+    Nothing -> 10
+
+// Parse the byte stream + sum the per-frame delays. **No LZW yet.**
+// Allocates the cache ref so subsequent renders can populate it.
 pub fun load-gif(s : session, bytes : vector<int>)
-        : <pure, read<global>, write<global>> ()
+        : <pure, read<global>, write<global>, alloc<global>> ()
   val g = parse-gif-from-vector(bytes)
   match g.frames
-    Nil ->
-      // GIF with no frames; nothing to render. Leave session unchanged.
-      ()
-    Cons(f, _) ->
-      val decoded = lzw/decode(f.lzw-min-code, f.raw-lzw)
-      val pal-list = match f.local-palette
-        Just(p) -> p
-        Nothing -> match g.global-palette
-          Just(p) -> p
-          Nothing -> Palette([])
-      val pal-vec = pal-list.entries.map fn(t)
-        Rgba(t.red, t.green, t.blue, Alpha(255))
-      // Interlaced GIFs store rows in 4 passes (rows 0,8,16,…; then
-      // 4,12,…; then 2,6,…; then 1,3,…). We reshuffle into normal
-      // row-major so the renderer's `pixels[y*w+x]` lookup works.
-      val gw = f.desc.width.pixels
-      val gh = f.desc.height.pixels
-      val pixel-vec = if f.desc.packed.interlaced
-        then deinterlace(decoded.vector, gw, gh)
-        else decoded.vector
-      val d = Decoded-gif(
-        width   = f.desc.width,
-        height  = f.desc.height,
-        palette = pal-vec.vector,
-        pixels  = pixel-vec
-      )
-      s := Just(d)
+    Nil -> ()
+    _ ->
+      val total = g.frames.foldl(0, fn(acc, f) acc + frame-delay-cs(f))
+      val cache = ref(Nothing)
+      s := Just(Loaded-gif(g, total, cache))
+
+// LZW-decode + de-interlace + palette resolve for one frame.
+fun decode-frame-of(g : gif, f : gif-frame) : pure decoded-frame
+  val decoded = lzw/decode(f.lzw-min-code, f.raw-lzw)
+  val pal-list = match f.local-palette
+    Just(p) -> p
+    Nothing -> match g.global-palette
+      Just(p) -> p
+      Nothing -> Palette([])
+  val pal-vec = pal-list.entries.map fn(t)
+    Rgba(t.red, t.green, t.blue, Alpha(255))
+  val gw = f.desc.width.pixels
+  val gh = f.desc.height.pixels
+  val pixel-vec = if f.desc.packed.interlaced
+    then deinterlace(decoded.vector, gw, gh)
+    else decoded.vector
+  Decoded-frame(
+    width    = f.desc.width,
+    height   = f.desc.height,
+    palette  = pal-vec.vector,
+    pixels   = pixel-vec,
+    delay-cs = frame-delay-cs(f)
+  )
+
+fun parse-gif-from-vector(bytes : vector<int>) : pure gif
+  val (ver, l, gp, r1) = parse-preamble(mk-reader-from-vector(bytes))
+  val frames           = parse-blocks(r1, [], Nothing)
+  Gif(ver, l, gp, frames)
+
+// --- frame selection -------------------------------------------------------
+//
+// `pick-frame-index` walks the parsed frame list summing delays
+// until it lands in the bucket containing `t-cs`, and returns the
+// index of that frame. We return an INDEX (not the frame itself) so
+// the cache key is comparable.
+
+fun pick-frame-index(frames : list<gif-frame>, total-cs : int, now-cs : int) : pure int
+  if total-cs <= 0 then 0
+  else
+    val t = if now-cs < 0 then 0 else now-cs % total-cs
+    scan-index(frames, t, 0, 0)
+
+fun scan-index(fs : list<gif-frame>, t : int, ix : int, acc : int) : pure int
+  match fs
+    Nil -> ix - 1
+    Cons(f, rest) ->
+      val next = acc + frame-delay-cs(f)
+      if t < next then ix
+      else scan-index(rest, t, ix + 1, next)
+
+// --- render-path query ------------------------------------------------------
+//
+// Returns the active frame for `now` (seconds). Hits the cache if
+// the active frame index matches; otherwise decodes the active
+// frame from the parsed structure and updates the cache.
+
+pub fun current-frame(s : session, now : float64)
+        : <pure, read<global>, write<global>> maybe<decoded-frame>
+  match !s
+    Nothing -> Nothing
+    Just(g) ->
+      val now-cs = (now * 100.0).floor.int
+      val ix     = pick-frame-index(g.parsed.frames, g.total-cs, now-cs)
+      match !g.cache
+        Just((cached-ix, cached-f)) ->
+          if cached-ix == ix then Just(cached-f)
+          else decode-and-cache(g, ix)
+        Nothing -> decode-and-cache(g, ix)
+
+fun decode-and-cache(g : loaded-gif, ix : int)
+       : <pure, read<global>, write<global>> maybe<decoded-frame>
+  val fs : list<gif-frame> = g.parsed.frames
+  match fs.drop(ix)
+    Nil          -> Nothing
+    Cons(f, _)   ->
+      val d = decode-frame-of(g.parsed, f)
+      val cell = g.cache
+      cell := Just((ix, d))
+      Just(d)
+
 
 // --- GIF89a de-interlacing --------------------------------------------------
 //
@@ -84,8 +168,8 @@ pub fun load-gif(s : session, bytes : vector<int>)
 //
 // Pixel data in the LZW stream is laid out: all pass-1 rows in
 // order, then all pass-2 rows, etc. We compute, for each ORIGINAL
-// row, which SOURCE row it came from — so we can read row-by-row
-// from the source into row-major destination.
+// row, which SOURCE row it came from in the LZW output — one O(1)
+// arithmetic call per output row instead of a quadratic search.
 
 fun pass-counts(h : int) : (int, int, int)
   val p1 = (h + 7) / 8
@@ -108,14 +192,3 @@ fun deinterlace(pixels : vector<int>, w : int, h : int) : vector<int>
     match pixels.at(src-row * w + col)
       Just(v) -> v
       Nothing -> 0
-
-// Convenience for parse-gif when the bytes are already a vector
-// (skips the list→vector conversion mk-reader does).
-fun parse-gif-from-vector(bytes : vector<int>) : pure gif
-  val (ver, l, gp, r1) = parse-preamble(mk-reader-from-vector(bytes))
-  val frames           = parse-blocks(r1, [], Nothing)
-  Gif(ver, l, gp, frames)
-
-// Render-path query: the decoded frame, if a GIF is loaded.
-pub fun current-frame(s : session) : <read<global>> maybe<decoded-gif>
-  !s
