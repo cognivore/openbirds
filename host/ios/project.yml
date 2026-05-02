@@ -1,0 +1,66 @@
+name: openbirds
+options:
+  bundleIdPrefix: de.memorici
+  # iOS 26.0 minimum — Liquid Glass landed there, and that's the only
+  # iOS version where this app makes sense visually. No backward-compat
+  # ramps to maintain.
+  deploymentTarget:
+    iOS: "26.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+
+targets:
+  openbirds:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      # The CBridge module map (clang) sits beside Sources/. xcodegen
+      # surfaces it in the project navigator; the actual import path is
+      # set via SWIFT_INCLUDE_PATHS below.
+      - path: CBridge
+        buildPhase: none
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: openbirds
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: de.memorici.openbirds
+        # C interop via clang module map, NOT a bridging header.
+        # `SWIFT_OBJC_BRIDGING_HEADER` would force `-fobjc-link-runtime`
+        # into the link; Xcode 26's `ld` then chokes on the
+        # `-Xlinker -objc_abi_version -Xlinker 2` flag pattern. Module
+        # maps don't trigger that linking path.
+        SWIFT_INCLUDE_PATHS: "$(SRCROOT)/CBridge"
+        # Static lib produced by `just build-koka-ios-sim`.
+        LIBRARY_SEARCH_PATHS: "$(SRCROOT)/../../build/ios-sim"
+        OTHER_LDFLAGS: "-lopenbirds"
+        # Simulator-only for now; device builds need a signing identity.
+        CODE_SIGNING_ALLOWED: NO
+        TARGETED_DEVICE_FAMILY: "1"
+        # Apple Silicon dev box → only arm64; never build x86_64 sim slice.
+        ARCHS: arm64
+        ONLY_ACTIVE_ARCH: YES
+        EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
+        # Two Xcode 26 link-driver workarounds that together get us a
+        # working build for our project layout (Swift + C-interop +
+        # static lib link). Both are local to this target — no
+        # codebase changes required.
+        #
+        # 1. Disable the "debug dylib" feature: it inserts a
+        #    `-Xlinker -alias _main -Xlinker
+        #    ___debug_main_executable_dylib_entry_point` redirect and
+        #    outputs an aux `.debug.dylib` that ld can't reconcile.
+        ENABLE_DEBUG_DYLIB: NO
+        # 2. Force LD = clang. Xcode 26 builds the link with clang-only
+        #    flags (`-target …`, `-Xlinker …`, `-fobjc-link-runtime`)
+        #    but defaults LD to `ld` (NOT a driver), so ld errors on
+        #    flags it doesn't know. Pointing LD at clang restores the
+        #    proper driver chain (clang strips/translates -Xlinker
+        #    args before forwarding to ld).
+        LD: $(DT_TOOLCHAIN_DIR)/usr/bin/clang
+        LDPLUSPLUS: $(DT_TOOLCHAIN_DIR)/usr/bin/clang++

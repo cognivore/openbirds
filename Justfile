@@ -82,5 +82,101 @@ host: build-dylib
 
 # --- Hygiene ----------------------------------------------------------------
 
+# --- Stage 2: iOS app via xcodegen + xcodebuild + simctl --------------------
+# Apple SDK + xcrun + xcodegen are NOT in the Nix devshell because system
+# Swift / Xcode-beta on macOS owns those (and version-mismatches with any
+# Nix-provided SDK). All iOS recipes therefore run with system tools.
+
+# Cross-compile the Koka core for iOS Simulator (arm64).
+# Reuses the .c files that `build-dylib` already had Koka emit, recompiles
+# each with the iOS Simulator SDK, builds an iOS-flavoured kklib unity,
+# then bundles everything into build/ios-sim/libopenbirds.a.
+build-koka-ios-sim: build-dylib
+    @echo ">>> cross-compiling Koka core for iOS Simulator (arm64)"
+    @# Files copied from the nix store inherit r-only perms; restore write
+    @# bit before rm so a re-run can clean up.
+    chmod -R u+w build/ios-sim 2>/dev/null || true
+    rm -rf build/ios-sim
+    mkdir -p build/ios-sim/obj
+    @# Vendor a copy of kklib's source tree so the patched unity (which
+    @# uses relative `#include "bits.c"` and `"../mimalloc/..."`) resolves.
+    @# Every `xcrun` invocation runs through `env -u` so it ignores the
+    @# Nix-provided Apple SDK paths and instead resolves through the
+    @# real `xcode-select` (Xcode-beta on disk).
+    KKLIB_FULL=$(dirname $(dirname $(which koka)))/share/koka/v3.2.2/kklib; \
+    [ -d "$KKLIB_FULL" ] || { echo "kklib source tree not found at $KKLIB_FULL" >&2; exit 1; }; \
+    mkdir -p build/ios-sim/kklib-src; \
+    cp -R "$KKLIB_FULL"/include  build/ios-sim/kklib-src/; \
+    cp -R "$KKLIB_FULL"/mimalloc build/ios-sim/kklib-src/; \
+    cp -R "$KKLIB_FULL"/src      build/ios-sim/kklib-src/; \
+    chmod -R u+w build/ios-sim/kklib-src; \
+    cp host/ios/kklib-ios-unity.c build/ios-sim/kklib-src/src/all-ios.c; \
+    KOKA_OUT=$(find build/koka -type d -name 'cc-drelease-*' | head -1); \
+    [ -n "$KOKA_OUT" ] || { echo "Koka build dir not found" >&2; exit 1; }; \
+    XCRUN="env -u SDKROOT -u DEVELOPER_DIR /usr/bin/xcrun -sdk iphonesimulator"; \
+    SDKROOT_IOS=$($XCRUN --show-sdk-path); \
+    [ -n "$SDKROOT_IOS" ] || { echo "iOS Simulator SDK not found via xcrun" >&2; exit 1; }; \
+    echo "iOS Simulator SDK: $SDKROOT_IOS"; \
+    IOS_TARGET=arm64-apple-ios17.0-simulator; \
+    CFLAGS_IOS="-O2 -arch arm64 -target $IOS_TARGET -DNDEBUG -DKK_MIMALLOC=8"; \
+    INCLUDES="-I build/ios-sim/kklib-src/include -I build/ios-sim/kklib-src/mimalloc/include -I $KOKA_OUT -I host/macos"; \
+    echo ">>> compiling kklib unity for iOS"; \
+    $XCRUN clang -c $CFLAGS_IOS $INCLUDES \
+      build/ios-sim/kklib-src/src/all-ios.c -o build/ios-sim/obj/kklib.o; \
+    echo ">>> compiling Koka-generated modules for iOS"; \
+    for c in "$KOKA_OUT"/*.c; do \
+      bn=$(basename "$c" .c); \
+      $XCRUN clang -c $CFLAGS_IOS $INCLUDES \
+        "$c" -o "build/ios-sim/obj/$bn.o"; \
+    done; \
+    echo ">>> compiling bridge.c for iOS"; \
+    $XCRUN clang -c $CFLAGS_IOS $INCLUDES \
+      host/macos/bridge.c -o build/ios-sim/obj/bridge.o; \
+    echo ">>> bundling static lib"; \
+    $XCRUN libtool -static \
+      -o build/ios-sim/libopenbirds.a \
+      build/ios-sim/obj/*.o
+    @echo "built: build/ios-sim/libopenbirds.a"
+
+# Generate Xcode project (declarative — from project.yml — no IDE).
+ios-project: build-koka-ios-sim
+    @echo ">>> regenerating host/ios/openbirds.xcodeproj from project.yml"
+    cd host/ios && xcodegen generate
+
+# Build the iOS app for the Simulator.
+ios-build: ios-project
+    @echo ">>> xcodebuild for iPhone Simulator"
+    xcodebuild \
+      -project host/ios/openbirds.xcodeproj \
+      -scheme openbirds \
+      -sdk iphonesimulator \
+      -configuration Debug \
+      -destination 'generic/platform=iOS Simulator' \
+      -derivedDataPath build/ios-derived \
+      CODE_SIGNING_ALLOWED=NO \
+      build | tail -20
+    @APP=$(find build/ios-derived/Build/Products -name '*.app' -type d | head -1) && echo "built: $APP"
+
+# Boot a simulator (idempotent), install the app, launch it, screenshot.
+ios-run: ios-build
+    @APP=$(find build/ios-derived/Build/Products/Debug-iphonesimulator -name 'openbirds.app' -type d | head -1); \
+    [ -n "$APP" ] || { echo "openbirds.app not found" >&2; exit 1; }; \
+    DEV_ID=$(xcrun simctl list devices available | awk -F '[()]' '/iPhone 17 Pro \(/ {print $2; exit}'); \
+    [ -n "$DEV_ID" ] || { echo "no iPhone 17 Pro simulator" >&2; exit 1; }; \
+    echo ">>> booting $DEV_ID"; \
+    xcrun simctl boot "$DEV_ID" 2>/dev/null || true; \
+    xcrun simctl bootstatus "$DEV_ID" -b; \
+    echo ">>> installing $APP"; \
+    xcrun simctl install "$DEV_ID" "$APP"; \
+    echo ">>> launching de.memorici.openbirds"; \
+    xcrun simctl launch "$DEV_ID" de.memorici.openbirds; \
+    sleep 2; \
+    mkdir -p build/ios-sim; \
+    SHOT=$(pwd)/build/ios-sim/screen.png; \
+    xcrun simctl io "$DEV_ID" screenshot "$SHOT"; \
+    echo "screenshot: $SHOT"
+
+# --- Hygiene ----------------------------------------------------------------
+
 clean:
-    rm -rf build .koka result
+    rm -rf build .koka result host/ios/openbirds.xcodeproj host/ios/Info.plist

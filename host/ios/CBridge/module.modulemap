@@ -1,0 +1,15 @@
+// Clang module map exposing the openbirds C bridge to Swift.
+//
+// Replaces the older `SWIFT_OBJC_BRIDGING_HEADER` mechanism, which
+// drags `-fobjc-link-runtime` and `-objc_abi_version 2` into the
+// linker invocation. Xcode 26's `ld` then chokes on the resulting
+// `-Xlinker -objc_abi_version -Xlinker 2` flag pattern. Module maps
+// expose C without forcing ObjC interop linking.
+//
+// Header path is relative to this modulemap file, so we point at the
+// canonical Apple-platform bridge under host/macos/.
+
+module CBridge {
+    header "../../macos/bridge.h"
+    export *
+}
