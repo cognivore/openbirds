@@ -1,15 +1,20 @@
-// koka/render.kk — the renderer.  Stage 3a substrate.
+// koka/render.kk — the renderer.
 //
 // `frame-rgba` is the only function the C bridge calls per frame.
 // Total — the brain decides the entire pixel buffer from `now` plus
 // dimensions, no I/O, no exceptions. Swift just memcpy's the result
 // into a Metal texture and presents it.
 //
-// For Stage 3a the contents are a hardcoded animated test pattern
-// — a colour-shifting checkerboard — so we can validate the pipe
-// (Koka → C → Swift → MTKTexture → screen) without touching GIF
-// parsing yet. Stage 3b replaces `pattern-at` with a GIF-frame
-// sampler; the FFI signature does not change.
+// Stage 3c (this commit): replace the hardcoded checkerboard with
+// the *decoded output* of a 2×2 sample GIF89a — verified end-to-end
+// against the parser + LZW decoder in `koka/gif.kk` main(). Each
+// output pixel is sampled from the GIF frame via nearest-neighbour
+// scaling, so the 2×2 art tiles up the whole 256×256 buffer cleanly.
+//
+// Future: load the bytes from disk (via the host effect), parse +
+// LZW-decode at runtime, animate frames with `delay-cs`. Today the
+// decoded data is inlined because we want the *renderer* substrate
+// proven against real GIF output before we add a runtime parser.
 
 module render
 
@@ -17,31 +22,51 @@ import std/num/float64
 import pixel
 import framebuffer
 
-val tile-px : int = 16
+// --- sample frame ------------------------------------------------------------
+//
+// Decoded output of `small-gif` from koka/gif.kk:
+//   parse-gif → frames[0] → lzw.decode → [0, 1, 0, 1]
+// Palette indices into:
+//   0 = white, 1 = black, 2 = red, 3 = green   (the GCT from the file)
 
-// Map (now, base-rgb) to an animated rgb triple. Pure.
-fun hue-shift(now : float64, base-red : int, base-green : int, base-blue : int) : (int, int, int)
-  val phase  = ((now * 64.0).floor.int).abs % 256
-  val red'   = (base-red   + phase)         % 256
-  val green' = (base-green + phase * 2)     % 256
-  val blue'  = (base-blue  + phase * 3)     % 256
-  (red', green', blue')
+val frame-w : int = 2
+val frame-h : int = 2
 
-// Colour for pixel (x, y) at time `now`. Checkerboard whose two
-// tiles both cycle hue.
-fun pattern-at(now : float64, x : pixel-x, y : pixel-y) : rgba
-  val tx = x.col / tile-px
-  val ty = y.row / tile-px
-  val light = ((tx + ty) % 2) == 0
-  val (rr, gg, bb) = if light
-                       then hue-shift(now, 240,  60,  60)
-                       else hue-shift(now,  20,  20, 120)
-  Rgba(Red(rr), Green(gg), Blue(bb), Alpha(255))
+val frame-pixels : list<int> = [0, 1, 0, 1]
 
-// FFI entry: produce one frame's RGBA bytes for the given size at the
-// given absolute time (seconds). Width/height arrive as plain ints
-// from C; we trust them (the bridge checked already) and skip the
-// `mk-*` smart constructors here.
+val frame-palette : list<rgba> = [
+  Rgba(Red(255), Green(255), Blue(255), Alpha(255)),
+  Rgba(Red(  0), Green(  0), Blue(  0), Alpha(255)),
+  Rgba(Red(255), Green(  0), Blue(  0), Alpha(255)),
+  Rgba(Red(  0), Green(255), Blue(  0), Alpha(255))
+]
+
+fun pixel-index-at(linear-ix : int) : int
+  match frame-pixels[linear-ix]
+    Just(p) -> p
+    Nothing -> 0
+
+fun palette-colour-at(ix : int) : rgba
+  match frame-palette[ix]
+    Just(c) -> c
+    Nothing -> opaque-black
+
+// Map a (large) output coord to a (small) frame coord by nearest-
+// neighbour scaling, then look up the palette colour.
+fun gif-frame-colour(x : pixel-x, y : pixel-y, w : width, h : height) : rgba
+  val gx = (x.col * frame-w) / w.pixels
+  val gy = (y.row * frame-h) / h.pixels
+  val pi = pixel-index-at(gy * frame-w + gx)
+  palette-colour-at(pi)
+
+// FFI entry: produce one frame's RGBA bytes for the given size at
+// the given absolute time. `now` is currently unused — when Stage 4
+// adds multiple frames it picks the active frame from accumulated
+// `delay-cs`. Width/height arrive as plain ints from C; we trust
+// them (the bridge checked already) and skip the `mk-*` smart
+// constructors here.
 pub fun frame-rgba(now : float64, w-px : int, h-px : int) : vector<int8>
-  build-buffer(Width(w-px), Height(h-px)) fn(x, y)
-    pattern-at(now, x, y)
+  val w = Width(w-px)
+  val h = Height(h-px)
+  build-buffer(w, h) fn(x, y)
+    gif-frame-colour(x, y, w, h)
