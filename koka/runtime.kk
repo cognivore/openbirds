@@ -1,10 +1,19 @@
 // koka/runtime.kk — process-lifetime state for the Koka brain.
 //
-// Holds the *parsed* GIF89a structure (cheap; one O(n) pass over
-// the bytes) plus a single-slot cache of the most recently decoded
-// frame. The renderer queries `current-frame(session, now)` per
-// frame; if the active frame is already in the cache we hand it
-// back, otherwise we LZW-decode it on demand and update the cache.
+// Two layers of caching, both single-slot:
+//
+//   1. Decoded-frame cache: holds the most recently LZW-decoded
+//      frame so consecutive renders of the same animation frame
+//      don't redo the decode (the LZW path is ~100 ms per frame on
+//      our list-backed decoder).
+//
+//   2. Rendered-pixels cache: holds the packed-RGBA `vector<int>`
+//      for the most recently rendered (frame-index, output-w,
+//      output-h) tuple so that the 60 Hz TimelineView tick — which
+//      asks us for the same frame at the same resolution six times
+//      between frame transitions — does NO per-pixel work in steady
+//      state. We dereference the ref and hand the cached vector
+//      back; the FFI bridge then memcpys it out.
 //
 // Why lazy decode: a 3.9 MB animated GIF (Lucile) can have hundreds
 // of frames. Eagerly LZW-decoding all of them at load time on the
@@ -31,25 +40,31 @@ import gif
 import lzw
 
 // One decoded frame: post-LZW, post-de-interlace, with palette
-// pre-converted to vector<rgba> for O(1) indexed lookup.
+// pre-converted to a vector<int> of packed RGBA values for O(1)
+// indexed lookup that returns a single immediate int (no Rgba
+// struct alloc on the per-pixel render path).
 pub struct decoded-frame
   width    : width
   height   : height
-  palette  : vector<rgba>
+  palette  : vector<int>     // packed 0xRRGGBBAA per palette entry
   pixels   : vector<int>     // flat row-major palette indices, w*h
   delay-cs : int             // hundredths of a second (10cs = 100ms)
 
 // What the session holds when a GIF has been parsed: the parsed
 // (but not yet LZW-decoded) frames + the total animation duration
-// + a single-slot mutable cache of the most recently decoded frame.
+// + a single-slot mutable cache of the most recently decoded frame
+// + a single-slot mutable cache of the most recently rendered
+// packed-RGBA buffer (keyed by frame-ix, out-w, out-h).
 //
-// The nested `cache` ref lets the render path memoise across calls
-// without a top-level mutable global. Allocating it costs an
-// `alloc<global>` effect, declared on `load-gif` below.
+// The nested `cache` and `rendered` refs let the render path
+// memoise across calls without a top-level mutable global.
+// Allocating each costs an `alloc<global>` effect, declared on
+// `load-gif` below.
 pub struct loaded-gif
   parsed   : gif
   total-cs : int
   cache    : ref<global, maybe<(int, decoded-frame)>>
+  rendered : ref<global, maybe<(int, int, int, vector<int>)>>
 
 pub alias session = ref<global, maybe<loaded-gif>>
 
@@ -67,7 +82,7 @@ fun frame-delay-cs(f : gif-frame) : int
     Nothing -> 10
 
 // Parse the byte stream + sum the per-frame delays. **No LZW yet.**
-// Allocates the cache ref so subsequent renders can populate it.
+// Allocates the cache refs so subsequent renders can populate them.
 pub fun load-gif(s : session, bytes : vector<int>)
         : <pure, read<global>, write<global>, alloc<global>> ()
   val g = parse-gif-from-vector(bytes)
@@ -75,10 +90,14 @@ pub fun load-gif(s : session, bytes : vector<int>)
     Nil -> ()
     _ ->
       val total = g.frames.foldl(0, fn(acc, f) acc + frame-delay-cs(f))
-      val cache = ref(Nothing)
-      s := Just(Loaded-gif(g, total, cache))
+      val cache    = ref(Nothing)
+      val rendered = ref(Nothing)
+      s := Just(Loaded-gif(g, total, cache, rendered))
 
 // LZW-decode + de-interlace + palette resolve for one frame.
+// Pre-packs the palette into `vector<int>` (one packed RGBA per
+// entry) so the per-pixel render path can read a single immediate
+// int per pixel — no `Rgba` struct allocations in the hot loop.
 fun decode-frame-of(g : gif, f : gif-frame) : pure decoded-frame
   val decoded = lzw/decode(f.lzw-min-code, f.raw-lzw)
   val pal-list = match f.local-palette
@@ -87,7 +106,7 @@ fun decode-frame-of(g : gif, f : gif-frame) : pure decoded-frame
       Just(p) -> p
       Nothing -> Palette([])
   val pal-vec = pal-list.entries.map fn(t)
-    Rgba(t.red, t.green, t.blue, Alpha(255))
+    pack-rgb(t.red.byte, t.green.byte, t.blue.byte)
   val gw = f.desc.width.pixels
   val gh = f.desc.height.pixels
   val pixel-vec = if f.desc.packed.interlaced
@@ -101,6 +120,12 @@ fun decode-frame-of(g : gif, f : gif-frame) : pure decoded-frame
     delay-cs = frame-delay-cs(f)
   )
 
+// Pack three 0..255 RGB ints + opaque alpha into 0xRRGGBBAA.
+// Local helper so framebuffer's `pack-rgba` doesn't need to know
+// about `rgb-triple`.
+fun pack-rgb(rr : int, gg : int, bb : int) : int
+  (rr * 16777216) + (gg * 65536) + (bb * 256) + 255
+
 fun parse-gif-from-vector(bytes : vector<int>) : pure gif
   val (ver, l, gp, r1) = parse-preamble(mk-reader-from-vector(bytes))
   val frames           = parse-blocks(r1, [], Nothing)
@@ -113,7 +138,7 @@ fun parse-gif-from-vector(bytes : vector<int>) : pure gif
 // index of that frame. We return an INDEX (not the frame itself) so
 // the cache key is comparable.
 
-fun pick-frame-index(frames : list<gif-frame>, total-cs : int, now-cs : int) : pure int
+pub fun pick-frame-index(frames : list<gif-frame>, total-cs : int, now-cs : int) : pure int
   if total-cs <= 0 then 0
   else
     val t = if now-cs < 0 then 0 else now-cs % total-cs
@@ -156,6 +181,42 @@ fun decode-and-cache(g : loaded-gif, ix : int)
       val cell = g.cache
       cell := Just((ix, d))
       Just(d)
+
+// --- rendered-pixel cache (called from render.kk) --------------------------
+//
+// `frame-ix-now(s, now)` returns Just(ix) if a GIF is loaded — used
+// by render.kk so it can compare against the rendered cache before
+// touching the per-pixel renderer at all.
+
+pub fun frame-ix-now(s : session, now : float64)
+        : <pure, read<global>> maybe<int>
+  match !s
+    Nothing -> Nothing
+    Just(g) ->
+      val now-cs = (now * 100.0).floor.int
+      Just(pick-frame-index(g.parsed.frames, g.total-cs, now-cs))
+
+// `cached-pixels(s, ix, w, h)` — Just(buf) if the rendered cache
+// holds a buffer for exactly this (frame-ix, w, h); Nothing if the
+// cache is empty, mismatched, or no GIF is loaded.
+pub fun cached-pixels(s : session, ix : int, w : int, h : int)
+        : <read<global>> maybe<vector<int>>
+  match !s
+    Nothing -> Nothing
+    Just(g) -> match !g.rendered
+      Just((cix, cw, ch, buf)) ->
+        if cix == ix && cw == w && ch == h then Just(buf) else Nothing
+      Nothing -> Nothing
+
+// `store-pixels(s, ix, w, h, buf)` — overwrite the rendered cache.
+// No-op when no GIF is loaded.
+pub fun store-pixels(s : session, ix : int, w : int, h : int, buf : vector<int>)
+        : <read<global>, write<global>> ()
+  match !s
+    Nothing -> ()
+    Just(g) ->
+      val cell = g.rendered
+      cell := Just((ix, w, h, buf))
 
 
 // --- GIF89a de-interlacing --------------------------------------------------

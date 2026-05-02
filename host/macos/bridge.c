@@ -19,6 +19,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <stdio.h>
+#include <mach/mach_time.h>
 
 #include <kklib.h>
 #include "koka_hello.h"
@@ -35,6 +37,27 @@
 // failing to acquire the lock just paints a placeholder this frame
 // and the next call retries.
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+
+// --- frame-time instrumentation --------------------------------------------
+//
+// Counts render calls and accumulates wall-clock time per call, prints
+// a rolling rate to stderr once per second. Compile-time off-switch:
+// `-DOPENBIRDS_NO_FPS_LOG=1` removes the prints (the counters still
+// run; their cost is a couple of mach_absolute_time reads per frame).
+static uint64_t g_frame_count           = 0;
+static uint64_t g_frame_total_ns        = 0;
+static uint64_t g_frame_max_ns          = 0;
+static uint64_t g_window_start_ns       = 0;
+static double   g_mach_ns_per_tick      = 0.0;
+
+static uint64_t bridge_now_ns(void) {
+    if (g_mach_ns_per_tick == 0.0) {
+        mach_timebase_info_data_t tb;
+        mach_timebase_info(&tb);
+        g_mach_ns_per_tick = (double)tb.numer / (double)tb.denom;
+    }
+    return (uint64_t)((double)mach_absolute_time() * g_mach_ns_per_tick);
+}
 
 // Aggregate Koka module init/done emitted by Koka's exec-mode build.
 // Initialises every transitively imported module (std/core,
@@ -132,16 +155,21 @@ void openbirds_load_gif(const uint8_t* bytes, int32_t len) {
 // --- pixel framebuffer ------------------------------------------------------
 //
 // Calls into Koka's `render::frame-rgba`, which returns a Koka
-// `vector<int8>` of length 4*width*height. Each cell is a boxed
-// int8; we unbox per element into the host-owned output buffer.
-// 256x256 ≈ 256K unboxes per frame; at ~10 ns each on Apple Silicon
-// that's a few ms — fine for substrate. The day this matters we
-// switch the Koka-side representation to a contiguous kk_bytes_t or
-// do per-row FFI blits.
+// `vector<int>` of length width*height — one packed 0xRRGGBBAA
+// int per pixel. We unbox each cell (a smallint, immediate on
+// 64-bit) and split into the four output bytes. 65k unboxes per
+// frame at 256², not 256k — and the per-call work on the Koka side
+// is also cut by 4× (no per-byte closure invocation).
+//
+// The Koka side memoises the rendered buffer per (frame-ix, w, h),
+// so on every TimelineView tick where the active frame and size
+// haven't changed, the only work here is the unbox + splat loop.
 void openbirds_render_frame(double now_seconds,
                             int32_t width_px, int32_t height_px,
                             uint8_t* out_buffer) {
     if (out_buffer == NULL || width_px <= 0 || height_px <= 0) return;
+
+    const uint64_t t0 = bridge_now_ns();
 
     // trylock: if a load is in flight on a background thread, paint a
     // visible placeholder for this frame instead of blocking the
@@ -168,14 +196,49 @@ void openbirds_render_frame(double now_seconds,
     kk_ssize_t len = 0;
     const kk_box_t* boxes = kk_vector_buf_borrow(v, &len, ctx);
 
-    const size_t expected = (size_t)width_px * (size_t)height_px * 4u;
-    const size_t n = (len > 0 && (size_t)len <= expected) ? (size_t)len : expected;
+    const size_t pixels   = (size_t)width_px * (size_t)height_px;
+    const size_t n        = (len > 0 && (size_t)len <= pixels) ? (size_t)len : pixels;
 
-    for (size_t i = 0; i < n; ++i) {
-        int8_t b = kk_int8_unbox(boxes[i], KK_BORROWED, ctx);
-        out_buffer[i] = (uint8_t)b;
+    for (size_t p = 0; p < n; ++p) {
+        // Smallint unbox + 64-bit clamp — both inline-fast on Apple
+        // Silicon (no heap, no allocation; the unbox is a tag strip
+        // and the clamp is a cast for in-range smallints). We need
+        // int64 (not int32) because a fully-opaque pixel packs as
+        // 0xRRGGBBAA which is > INT32_MAX; clamp32 would saturate.
+        kk_integer_t  ki     = kk_integer_unbox(boxes[p], ctx);
+        const int64_t packed = kk_integer_clamp64_borrow(ki, ctx);
+        const uint32_t up    = (uint32_t)packed;
+        const size_t  o      = p * 4u;
+        out_buffer[o + 0] = (uint8_t)((up >> 24) & 0xFF);
+        out_buffer[o + 1] = (uint8_t)((up >> 16) & 0xFF);
+        out_buffer[o + 2] = (uint8_t)((up >>  8) & 0xFF);
+        out_buffer[o + 3] = (uint8_t)( up        & 0xFF);
     }
 
     kk_vector_drop(v, ctx);
     pthread_mutex_unlock(&g_lock);
+
+    const uint64_t t1 = bridge_now_ns();
+    const uint64_t dt = t1 - t0;
+    g_frame_count++;
+    g_frame_total_ns += dt;
+    if (dt > g_frame_max_ns) g_frame_max_ns = dt;
+    if (g_window_start_ns == 0) g_window_start_ns = t0;
+    if (t1 - g_window_start_ns >= 1000000000ull) {
+#ifndef OPENBIRDS_NO_FPS_LOG
+        const double secs    = (double)(t1 - g_window_start_ns) / 1e9;
+        const double fps     = (double)g_frame_count / secs;
+        const double avg_ms  = (double)g_frame_total_ns / (double)g_frame_count / 1e6;
+        const double max_ms  = (double)g_frame_max_ns / 1e6;
+        fprintf(stderr,
+                "[openbirds] render: %5.1f fps  avg %5.2f ms  max %6.2f ms  (%llu calls in %.2fs)\n",
+                fps, avg_ms, max_ms,
+                (unsigned long long)g_frame_count, secs);
+        fflush(stderr);
+#endif
+        g_frame_count     = 0;
+        g_frame_total_ns  = 0;
+        g_frame_max_ns    = 0;
+        g_window_start_ns = t1;
+    }
 }
