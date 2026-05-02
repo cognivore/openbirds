@@ -144,20 +144,33 @@ pub struct gif
 // --- byte reader -------------------------------------------------------------
 //
 // Byte-by-byte sequential reader. Functional state-passing: each
-// read returns the new reader. Backing storage is `list<int>` (each
-// 0..255) which is easy to construct in tests; we'll move to
-// `vector<int>` when the input sizes start to bite.
+// read returns a new reader value. Backing storage is `vector<int>`
+// + a position cursor so each `read-byte` is O(1) — the previous
+// `list<int>` form was O(n²) overall on big inputs (Lucile is 3.9 MB
+// and would never finish).
+//
+// The vector is shared across reader values (Perceus only dups the
+// 16-byte struct, never the backing array), so functional
+// state-passing stays cheap.
 
 pub struct reader
-  remaining : list<int>
+  bytes : vector<int>
+  pos   : int
 
+// Convert a list (handy in tests) into a vector-backed reader.
 pub fun mk-reader(bytes : list<int>) : reader
-  Reader(bytes)
+  Reader(bytes.vector, 0)
+
+// Build directly from a vector — the path FFI uses when Swift hands
+// us a Data buffer.
+pub fun mk-reader-from-vector(bytes : vector<int>) : reader
+  Reader(bytes, 0)
 
 pub fun read-byte(r : reader) : exn (int, reader)
-  match r.remaining
-    Nil -> throw("unexpected end of input")
-    Cons(x, xs) -> (x, Reader(xs))
+  if r.pos >= r.bytes.length then
+    throw("unexpected end of input at offset " ++ r.pos.show)
+  else
+    (r.bytes[r.pos], Reader(r.bytes, r.pos + 1))
 
 // 2-byte little-endian word (GIF widths/heights/delays).
 pub fun read-word-le(r0 : reader) : exn (int, reader)
