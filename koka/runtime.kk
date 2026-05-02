@@ -58,13 +58,56 @@ pub fun load-gif(s : session, bytes : vector<int>)
           Nothing -> Palette([])
       val pal-vec = pal-list.entries.map fn(t)
         Rgba(t.red, t.green, t.blue, Alpha(255))
+      // Interlaced GIFs store rows in 4 passes (rows 0,8,16,…; then
+      // 4,12,…; then 2,6,…; then 1,3,…). We reshuffle into normal
+      // row-major so the renderer's `pixels[y*w+x]` lookup works.
+      val gw = f.desc.width.pixels
+      val gh = f.desc.height.pixels
+      val pixel-vec = if f.desc.packed.interlaced
+        then deinterlace(decoded.vector, gw, gh)
+        else decoded.vector
       val d = Decoded-gif(
         width   = f.desc.width,
         height  = f.desc.height,
         palette = pal-vec.vector,
-        pixels  = decoded.vector
+        pixels  = pixel-vec
       )
       s := Just(d)
+
+// --- GIF89a de-interlacing --------------------------------------------------
+//
+// The four interlace passes (start-row, step):
+//   pass 1: (0, 8)   ceil(h/8) rows
+//   pass 2: (4, 8)   floor((h-5)/8)+1 rows  (0 if h<5)
+//   pass 3: (2, 4)   floor((h-3)/4)+1 rows  (0 if h<3)
+//   pass 4: (1, 2)   floor((h-2)/2)+1 rows  (0 if h<2)
+//
+// Pixel data in the LZW stream is laid out: all pass-1 rows in
+// order, then all pass-2 rows, etc. We compute, for each ORIGINAL
+// row, which SOURCE row it came from — so we can read row-by-row
+// from the source into row-major destination.
+
+fun pass-counts(h : int) : (int, int, int)
+  val p1 = (h + 7) / 8
+  val p2 = if h >= 5 then (h - 5) / 8 + 1 else 0
+  val p3 = if h >= 3 then (h - 3) / 4 + 1 else 0
+  (p1, p2, p3)
+
+fun src-row-of-orig(orig : int, p1 : int, p2 : int, p3 : int) : int
+  if      orig % 8 == 0 then orig / 8
+  elif    orig % 8 == 4 then p1 + (orig - 4) / 8
+  elif    orig % 4 == 2 then p1 + p2 + (orig - 2) / 4
+  else                       p1 + p2 + p3 + (orig - 1) / 2
+
+fun deinterlace(pixels : vector<int>, w : int, h : int) : vector<int>
+  val (p1, p2, p3) = pass-counts(h)
+  vector-init(w * h) fn(i)
+    val orig-row = i / w
+    val col      = i - orig-row * w
+    val src-row  = src-row-of-orig(orig-row, p1, p2, p3)
+    match pixels.at(src-row * w + col)
+      Just(v) -> v
+      Nothing -> 0
 
 // Convenience for parse-gif when the bytes are already a vector
 // (skips the list→vector conversion mk-reader does).

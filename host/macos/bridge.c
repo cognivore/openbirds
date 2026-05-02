@@ -8,36 +8,36 @@
 //      Keychain, APNs).
 //
 //   2. Expose a plain-C ABI (`bridge.h`) for the Swift shell. Anything
-//      Koka-specific (kklib, kk_string_t, kk_context_t, kk_vector_t)
-//      is hidden; Swift sees only `const char*`, primitives, and raw
-//      `uint8_t*` buffers.
+//      Koka-specific (kklib, kk_string_t, kk_context_t, kk_vector_t,
+//      kk_ref_t) is hidden; Swift sees only `const char*`,
+//      primitives, and raw `uint8_t*` buffers.
 //
 // Per-platform: this file is the macOS implementation, reused
 // verbatim by iOS (both Apple-platform). Android lives elsewhere.
 
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <kklib.h>
 #include "koka_hello.h"
 #include "render.h"
+#include "runtime.h"
 
 #include "bridge.h"
 
-// Aggregate Koka module init/done emitted by Koka's exec-mode build
-// (we coerce it into a dylib by renaming the unused C entry point in
-// the Justfile via `--output-entry=koka_unused_entry`). This single
-// call recursively initialises every transitively imported module
-// (std/core, std/num/int64, host, pixel, framebuffer, render, hello).
+// Aggregate Koka module init/done emitted by Koka's exec-mode build.
+// Initialises every transitively imported module (std/core,
+// std/num/int64, host, pixel, framebuffer, lzw, gif, runtime,
+// render, hello).
 extern void kk_koka_hello__main__init(kk_context_t* _ctx);
 extern void kk_koka_hello__main__done(kk_context_t* _ctx);
 
 // --- session lifecycle ------------------------------------------------------
-//
-// Long-lived Koka context shared by every entry point. The brain
-// holds animation state, sprite caches, encrypted-store handles, etc.
-// across calls; only `openbirds_shutdown()` tears it down.
-static kk_context_t* g_ctx = NULL;
+
+static kk_context_t* g_ctx              = NULL;
+static kk_ref_t      g_session;
+static bool          g_session_init     = false;
 
 static kk_context_t* ensure_ctx(void) {
     if (g_ctx == NULL) {
@@ -47,8 +47,24 @@ static kk_context_t* ensure_ctx(void) {
     return g_ctx;
 }
 
+// Lazily create the Koka-side session ref the first time something
+// needs it (load-gif or render). The bridge holds ONE reference for
+// the process lifetime; per-call we `kk_ref_dup` so each Koka call
+// can consume its argument.
+static kk_ref_t borrow_session(kk_context_t* ctx) {
+    if (!g_session_init) {
+        g_session      = kk_runtime_new_session(ctx);
+        g_session_init = true;
+    }
+    return kk_ref_dup(g_session, ctx);
+}
+
 void openbirds_shutdown(void) {
     if (g_ctx != NULL) {
+        if (g_session_init) {
+            kk_ref_drop(g_session, g_ctx);
+            g_session_init = false;
+        }
         kk_koka_hello__main__done(g_ctx);
         kk_main_end(g_ctx);
         g_ctx = NULL;
@@ -73,25 +89,50 @@ void openbirds_free(const char* s) {
     free((void*)s);
 }
 
-// --- pixel framebuffer (Stage 3a) ------------------------------------------
+// --- GIF loading (Stage 3c/Lucile) -----------------------------------------
+//
+// Wraps a uint8_t* buffer into a Koka `vector<int>` and hands it to
+// `runtime/load-gif`. Each byte gets boxed as a kk_integer (small
+// integers are immediates on Apple Silicon — no heap alloc).
+
+static kk_vector_t bytes_to_vector_int(const uint8_t* data, int32_t len, kk_context_t* ctx) {
+    kk_box_t* buf = NULL;
+    kk_vector_t v = kk_vector_alloc_uninit((kk_ssize_t)len, &buf, ctx);
+    for (int32_t i = 0; i < len; i++) {
+        buf[i] = kk_integer_box(kk_integer_from_int32((int32_t)data[i], ctx), ctx);
+    }
+    return v;
+}
+
+void openbirds_load_gif(const uint8_t* bytes, int32_t len) {
+    if (bytes == NULL || len <= 0) return;
+    kk_context_t* ctx = ensure_ctx();
+    kk_ref_t      s   = borrow_session(ctx);
+    kk_vector_t   v   = bytes_to_vector_int(bytes, len, ctx);
+    kk_runtime_load_gif(s, v, ctx);
+    // load_gif consumes both s and v per Koka calling conventions.
+}
+
+// --- pixel framebuffer ------------------------------------------------------
 //
 // Calls into Koka's `render::frame-rgba`, which returns a Koka
 // `vector<int8>` of length 4*width*height. Each cell is a boxed
 // int8; we unbox per element into the host-owned output buffer.
 // 256x256 ≈ 256K unboxes per frame; at ~10 ns each on Apple Silicon
-// that's a few ms — fine for substrate. The day this matters we'll
-// switch the Koka-side representation to a contiguous `kk_bytes_t`
-// or do per-row FFI blits.
+// that's a few ms — fine for substrate. The day this matters we
+// switch the Koka-side representation to a contiguous kk_bytes_t or
+// do per-row FFI blits.
 void openbirds_render_frame(double now_seconds,
                             int32_t width_px, int32_t height_px,
                             uint8_t* out_buffer) {
     if (out_buffer == NULL || width_px <= 0 || height_px <= 0) return;
 
     kk_context_t* ctx = ensure_ctx();
+    kk_ref_t      s   = borrow_session(ctx);
 
     kk_integer_t w = kk_integer_from_int32(width_px, ctx);
     kk_integer_t h = kk_integer_from_int32(height_px, ctx);
-    kk_vector_t  v = kk_render_frame_rgba(now_seconds, w, h, ctx);
+    kk_vector_t  v = kk_render_frame_rgba(s, now_seconds, w, h, ctx);
 
     kk_ssize_t len = 0;
     const kk_box_t* boxes = kk_vector_buf_borrow(v, &len, ctx);

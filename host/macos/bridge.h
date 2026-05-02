@@ -13,8 +13,10 @@ extern "C" {
 // --- session lifecycle ----------------------------------------------------
 //
 // The Koka context is created on first use and lives until shutdown.
+// The Koka-side `session` (a typed `ref<global, ...>` for the
+// brain's mutable state) is created lazily on first call too.
 // Animation state, decoded GIF frames, mood store, etc. all live
-// inside that context — calling render or greeting repeatedly does
+// inside that session — calling render or greeting repeatedly does
 // NOT spin Koka up and down; only `openbirds_shutdown()` does.
 void openbirds_shutdown(void);
 
@@ -35,6 +37,18 @@ void        openbirds_free(const char* s);
 void openbirds_render_frame(double now_seconds,
                             int32_t width_px, int32_t height_px,
                             uint8_t* out_buffer);
+
+// --- GIF loading (Stage 3c/Lucile) ----------------------------------------
+//
+// Hand the Koka brain the bytes of a GIF89a file. Koka parses, runs
+// LZW decode of the first frame, and caches the decoded pixel data
+// + palette inside its session. Subsequent `openbirds_render_frame`
+// calls draw from the cached data instead of the fallback
+// checkerboard.
+//
+// `bytes` is borrowed during this call only; copy it before calling
+// if the caller needs to free it. `len` is the number of bytes.
+void openbirds_load_gif(const uint8_t* bytes, int32_t len);
 
 #ifdef __cplusplus
 }

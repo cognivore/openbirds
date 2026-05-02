@@ -1,12 +1,12 @@
 // openbirds iOS shell — thin servant. mcmonad-style: this file owns
-// nothing except the SwiftUI window, the per-frame tick, and the
-// pixel-buffer-to-CGImage marshalling.  Every decision about *what*
-// to draw is in Koka.
+// nothing except the SwiftUI window, the per-frame tick, the
+// pixel-buffer-to-CGImage marshalling, and the one-time GIF asset
+// load on launch. Every decision about *what* to draw is in Koka.
 //
 // Per-frame loop: TimelineView ticks at the display refresh; we ask
 // Koka for the RGBA bytes for the current absolute time, wrap them
 // in a CGImage, hand it to a SwiftUI Image with `.interpolation(.none)`
-// for crisp pixel-art scaling. ~70 lines total.
+// for crisp pixel-art scaling.
 //
 // Stage 4+ swaps the CGImage path for a MetalKit view backed by an
 // MTLTexture. The Koka-facing FFI (openbirds_render_frame) does not
@@ -18,6 +18,22 @@ import CBridge
 
 @main
 struct OpenbirdsApp: App {
+    init() {
+        // Hand the bundled lucile.gif bytes to the Koka brain as
+        // soon as the process starts. Koka parses + LZW-decodes once
+        // and caches inside its session; subsequent render calls hit
+        // the cache. Failure here is silent — the renderer falls back
+        // to its checkerboard so the app still draws something.
+        guard let url = Bundle.main.url(forResource: "lucile", withExtension: "gif"),
+              let data = try? Data(contentsOf: url) else {
+            return
+        }
+        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+            openbirds_load_gif(base, Int32(data.count))
+        }
+    }
+
     var body: some Scene {
         WindowGroup {
             FramebufferView()

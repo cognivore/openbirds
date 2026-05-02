@@ -20,6 +20,11 @@ targets:
       # set via SWIFT_INCLUDE_PATHS below.
       - path: CBridge
         buildPhase: none
+      # Bundled assets (lucile.gif, etc.). xcodegen marks anything
+      # under here as a copy-resources phase entry by default, so the
+      # files land in openbirds.app/<filename> at runtime.
+      - path: Resources
+        buildPhase: resources
     info:
       path: Info.plist
       properties:
