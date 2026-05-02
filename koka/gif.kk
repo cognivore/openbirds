@@ -26,6 +26,7 @@ module gif
 
 import std/num/int32
 import pixel
+import lzw
 
 // --- timing ------------------------------------------------------------------
 
@@ -60,18 +61,8 @@ pub value struct rgb-triple
 pub struct palette
   entries : list<rgb-triple>
 
-// --- LZW codes (parsed structurally; decoded in koka/lzw.kk) ----------------
-
-pub value struct lzw-code
-  code : int
-
-// LZW initial code size from the image data block. 2..12 bits.
-pub value struct lzw-min-code-size
-  bits : int
-
-pub fun mk-lzw-min-code-size(n : int) : exn lzw-min-code-size
-  if n < 2 || n > 12 then throw("lzw-min-code-size out of range: " ++ n.show)
-  else Lzw-min-code-size(n)
+// LZW types (`lzw-code`, `lzw-min-code-size`) live in `koka/lzw.kk`
+// to break a circular import. We re-use them here via `import lzw`.
 
 // --- header ------------------------------------------------------------------
 
