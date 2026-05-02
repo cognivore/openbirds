@@ -36,7 +36,15 @@ show-c:
 build-dylib:
     rm -rf build/koka build/libopenbirds.dylib
     mkdir -p build
-    koka -l --target=c -O2 --builddir=build/koka koka/hello.kk
+    @# Build in executable mode (NOT -l) so Koka generates the
+    @# `kk_koka_hello__main__init` / `__done` aggregate that recursively
+    @# initialises every transitively-imported module. The unused C
+    @# entry point is renamed via --output-entry so it doesn't clash
+    @# with our dylib (which has no `int main`).
+    koka --target=c -O2 \
+      --builddir=build/koka \
+      --output-entry=koka_unused_entry \
+      koka/hello.kk
     KOKA_OUT=$(find build/koka -type d -name 'cc-drelease-*' | head -1); \
     [ -n "$KOKA_OUT" ] || { echo "koka build dir not found" >&2; exit 1; }; \
     echo "linking via clang:"; \
