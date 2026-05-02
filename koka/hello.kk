@@ -14,6 +14,9 @@ module hello
 
 import std/num/int64
 import host
+// Pull render into the module graph so its symbols (kk_koka_render_*)
+// are available in the static library / dylib.
+import render
 
 // Total: no effects allowed in body. Compiler-enforced.
 pub fun greeting-text() : string
