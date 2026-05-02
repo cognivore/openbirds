@@ -1,72 +1,69 @@
 // koka/render.kk — the renderer.
 //
-// `frame-rgba` is the only function the C bridge calls per frame.
-// Total — the brain decides the entire pixel buffer from `now` plus
-// dimensions, no I/O, no exceptions. Swift just memcpy's the result
-// into a Metal texture and presents it.
+// `frame-rgba` is the one function the C bridge calls per frame.
+// It takes a `session` (the runtime state-cell handle) and dispatches:
 //
-// Stage 3c (this commit): replace the hardcoded checkerboard with
-// the *decoded output* of a 2×2 sample GIF89a — verified end-to-end
-// against the parser + LZW decoder in `koka/gif.kk` main(). Each
-// output pixel is sampled from the GIF frame via nearest-neighbour
-// scaling, so the 2×2 art tiles up the whole 256×256 buffer cleanly.
+//   - If the session has a loaded GIF, sample from its decoded pixel
+//     data + palette, scaled nearest-neighbour to the output size.
+//   - Otherwise fall back to a hue-cycling checkerboard so the
+//     framebuffer pipe stays visible during dev / before a GIF loads.
 //
-// Future: load the bytes from disk (via the host effect), parse +
-// LZW-decode at runtime, animate frames with `delay-cs`. Today the
-// decoded data is inlined because we want the *renderer* substrate
-// proven against real GIF output before we add a runtime parser.
+// The brain owns "what is on screen". Swift just blits.
 
 module render
 
 import std/num/float64
 import pixel
 import framebuffer
+import runtime
 
-// --- sample frame ------------------------------------------------------------
-//
-// Decoded output of `small-gif` from koka/gif.kk:
-//   parse-gif → frames[0] → lzw.decode → [0, 1, 0, 1]
-// Palette indices into:
-//   0 = white, 1 = black, 2 = red, 3 = green   (the GCT from the file)
+// --- fallback test pattern (no GIF loaded) -----------------------------------
 
-val frame-w : int = 2
-val frame-h : int = 2
+val tile-px : int = 16
 
-val frame-pixels : list<int> = [0, 1, 0, 1]
+fun hue-shift(now : float64, base-red : int, base-green : int, base-blue : int) : (int, int, int)
+  val phase  = ((now * 64.0).floor.int).abs % 256
+  val red'   = (base-red   + phase)         % 256
+  val green' = (base-green + phase * 2)     % 256
+  val blue'  = (base-blue  + phase * 3)     % 256
+  (red', green', blue')
 
-val frame-palette : list<rgba> = [
-  Rgba(Red(255), Green(255), Blue(255), Alpha(255)),
-  Rgba(Red(  0), Green(  0), Blue(  0), Alpha(255)),
-  Rgba(Red(255), Green(  0), Blue(  0), Alpha(255)),
-  Rgba(Red(  0), Green(255), Blue(  0), Alpha(255))
-]
+fun checkerboard-at(now : float64, x : pixel-x, y : pixel-y) : rgba
+  val tx = x.col / tile-px
+  val ty = y.row / tile-px
+  val light = ((tx + ty) % 2) == 0
+  val (rr, gg, bb) = if light
+                       then hue-shift(now, 240,  60,  60)
+                       else hue-shift(now,  20,  20, 120)
+  Rgba(Red(rr), Green(gg), Blue(bb), Alpha(255))
 
-fun pixel-index-at(linear-ix : int) : int
-  match frame-pixels[linear-ix]
-    Just(p) -> p
-    Nothing -> 0
+// --- GIF sampler (session has a loaded decoded-gif) -------------------------
 
-fun palette-colour-at(ix : int) : rgba
-  match frame-palette[ix]
+fun palette-colour(d : decoded-gif, ix : int) : rgba
+  match d.palette.at(ix)
     Just(c) -> c
     Nothing -> opaque-black
 
-// Map a (large) output coord to a (small) frame coord by nearest-
-// neighbour scaling, then look up the palette colour.
-fun gif-frame-colour(x : pixel-x, y : pixel-y, w : width, h : height) : rgba
-  val gx = (x.col * frame-w) / w.pixels
-  val gy = (y.row * frame-h) / h.pixels
-  val pi = pixel-index-at(gy * frame-w + gx)
-  palette-colour-at(pi)
+fun gif-pixel-at(d : decoded-gif, x : pixel-x, y : pixel-y, w : width, h : height) : rgba
+  // Nearest-neighbour scale: map output (x,y) to source frame (gx,gy).
+  val gw = d.width.pixels
+  val gh = d.height.pixels
+  val gx = (x.col * gw) / w.pixels
+  val gy = (y.row * gh) / h.pixels
+  match d.pixels.at(gy * gw + gx)
+    Just(pi) -> palette-colour(d, pi)
+    Nothing  -> opaque-black
 
-// FFI entry: produce one frame's RGBA bytes for the given size at
-// the given absolute time. `now` is currently unused — when Stage 4
-// adds multiple frames it picks the active frame from accumulated
-// `delay-cs`. Width/height arrive as plain ints from C; we trust
-// them (the bridge checked already) and skip the `mk-*` smart
-// constructors here.
-pub fun frame-rgba(now : float64, w-px : int, h-px : int) : vector<int8>
+// --- entry point ------------------------------------------------------------
+
+pub fun frame-rgba(s : session, now : float64, w-px : int, h-px : int)
+        : <read<global>> vector<int8>
   val w = Width(w-px)
   val h = Height(h-px)
-  build-buffer(w, h) fn(x, y)
-    gif-frame-colour(x, y, w, h)
+  match current-frame(s)
+    Just(d) ->
+      build-buffer(w, h) fn(x, y)
+        gif-pixel-at(d, x, y, w, h)
+    Nothing ->
+      build-buffer(w, h) fn(x, y)
+        checkerboard-at(now, x, y)

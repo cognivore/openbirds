@@ -334,7 +334,7 @@ pub fun parse-frame-body(r0 : reader,
 
 // --- block loop (called after the preamble is parsed) ----------------------
 
-fun parse-blocks(r0 : reader,
+pub fun parse-blocks(r0 : reader,
                  frames-acc : list<gif-frame>,
                  gce-pending : maybe<gce>) : <exn,div> list<gif-frame>
   val (b, r1) = read-byte(r0)
