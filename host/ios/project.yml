@@ -36,11 +36,21 @@ targets:
         # `-Xlinker -objc_abi_version -Xlinker 2` flag pattern. Module
         # maps don't trigger that linking path.
         SWIFT_INCLUDE_PATHS: "$(SRCROOT)/CBridge"
-        # Static lib produced by `just build-koka-ios-sim`.
-        LIBRARY_SEARCH_PATHS: "$(SRCROOT)/../../build/ios-sim"
+        # Static libs are produced per-SDK by Justfile recipes.
+        # Simulator: `just build-koka-ios-sim`     → build/ios-sim/
+        # Device:    `just build-koka-ios-device`  → build/ios-device/
+        # xcodegen's [sdk=...] qualifier picks the right one per build.
+        "LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]": "$(SRCROOT)/../../build/ios-sim"
+        "LIBRARY_SEARCH_PATHS[sdk=iphoneos*]":        "$(SRCROOT)/../../build/ios-device"
         OTHER_LDFLAGS: "-lopenbirds"
-        # Simulator-only for now; device builds need a signing identity.
-        CODE_SIGNING_ALLOWED: NO
+        # Code signing for device. Simulator builds set
+        # CODE_SIGNING_ALLOWED=NO via the Justfile to skip.
+        DEVELOPMENT_TEAM:      3MS6433L44
+        CODE_SIGN_STYLE:       Automatic
+        CODE_SIGN_IDENTITY:    "Apple Development"
+        # Per-SDK overrides: don't sign simulator builds, do sign device.
+        "CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]": NO
+        "CODE_SIGNING_ALLOWED[sdk=iphoneos*]":        YES
         TARGETED_DEVICE_FAMILY: "1"
         # Apple Silicon dev box → only arm64; never build x86_64 sim slice.
         ARCHS: arm64

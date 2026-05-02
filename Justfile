@@ -176,6 +176,92 @@ ios-run: ios-build
     xcrun simctl io "$DEV_ID" screenshot "$SHOT"; \
     echo "screenshot: $SHOT"
 
+# --- Stage 2 (device): real iPhone over USB --------------------------------
+
+# Cross-compile the Koka core for a real iOS device (arm64-apple-iosX.X,
+# NOT the -simulator triple). Same shape as build-koka-ios-sim with a
+# different SDK + target.
+build-koka-ios-device: build-dylib
+    @echo ">>> cross-compiling Koka core for iOS Device (arm64)"
+    chmod -R u+w build/ios-device 2>/dev/null || true
+    rm -rf build/ios-device
+    mkdir -p build/ios-device/obj
+    KKLIB_FULL=$(dirname $(dirname $(which koka)))/share/koka/v3.2.2/kklib; \
+    [ -d "$KKLIB_FULL" ] || { echo "kklib source tree not found at $KKLIB_FULL" >&2; exit 1; }; \
+    mkdir -p build/ios-device/kklib-src; \
+    cp -R "$KKLIB_FULL"/include  build/ios-device/kklib-src/; \
+    cp -R "$KKLIB_FULL"/mimalloc build/ios-device/kklib-src/; \
+    cp -R "$KKLIB_FULL"/src      build/ios-device/kklib-src/; \
+    chmod -R u+w build/ios-device/kklib-src; \
+    cp host/ios/kklib-ios-unity.c build/ios-device/kklib-src/src/all-ios.c; \
+    KOKA_OUT=$(find build/koka -type d -name 'cc-drelease-*' | head -1); \
+    [ -n "$KOKA_OUT" ] || { echo "Koka build dir not found" >&2; exit 1; }; \
+    XCRUN="env -u SDKROOT -u DEVELOPER_DIR /usr/bin/xcrun -sdk iphoneos"; \
+    SDKROOT_IOS=$($XCRUN --show-sdk-path); \
+    [ -n "$SDKROOT_IOS" ] || { echo "iOS Device SDK not found via xcrun" >&2; exit 1; }; \
+    echo "iOS Device SDK: $SDKROOT_IOS"; \
+    IOS_TARGET=arm64-apple-ios17.0; \
+    CFLAGS_IOS="-O2 -arch arm64 -target $IOS_TARGET -DNDEBUG -DKK_MIMALLOC=8"; \
+    INCLUDES="-I build/ios-device/kklib-src/include -I build/ios-device/kklib-src/mimalloc/include -I $KOKA_OUT -I host/macos"; \
+    echo ">>> compiling kklib unity for iOS device"; \
+    $XCRUN clang -c $CFLAGS_IOS $INCLUDES \
+      build/ios-device/kklib-src/src/all-ios.c -o build/ios-device/obj/kklib.o; \
+    echo ">>> compiling Koka-generated modules"; \
+    for c in "$KOKA_OUT"/*.c; do \
+      bn=$(basename "$c" .c); \
+      $XCRUN clang -c $CFLAGS_IOS $INCLUDES \
+        "$c" -o "build/ios-device/obj/$bn.o"; \
+    done; \
+    echo ">>> compiling bridge.c"; \
+    $XCRUN clang -c $CFLAGS_IOS $INCLUDES \
+      host/macos/bridge.c -o build/ios-device/obj/bridge.o; \
+    echo ">>> bundling static lib"; \
+    $XCRUN libtool -static \
+      -o build/ios-device/libopenbirds.a \
+      build/ios-device/obj/*.o
+    @echo "built: build/ios-device/libopenbirds.a"
+
+# xcodebuild for a real iPhone. We do NOT regenerate the .xcodeproj
+# from project.yml here, because for personal-team signing the Xcode
+# IDE writes account-UUID + provisioning-profile bindings INTO the
+# .xcodeproj that aren't reproducible from project.yml. Regenerating
+# would lose them and CLI signing breaks. If you need to regenerate
+# (e.g. after editing project.yml), run `just ios-project` separately
+# and re-bind signing in the Xcode IDE one time.
+ios-build-device: build-koka-ios-device
+    @[ -d host/ios/openbirds.xcodeproj ] || { \
+      echo "No host/ios/openbirds.xcodeproj — run 'just ios-project' first, then open in Xcode and bind Team in Signing & Capabilities." >&2; \
+      exit 1; }
+    @echo ">>> xcodebuild for iPhone (device)"
+    xcodebuild \
+      -project host/ios/openbirds.xcodeproj \
+      -scheme openbirds \
+      -sdk iphoneos \
+      -configuration Debug \
+      -destination 'generic/platform=iOS' \
+      -derivedDataPath build/ios-derived-device \
+      -allowProvisioningUpdates \
+      build | tail -20
+    @APP=$(find build/ios-derived-device/Build/Products -name '*.app' -type d | head -1) && echo "built: $APP"
+
+# Install on the first connected iPhone and launch. Requires the
+# device to be: USB-connected + trusted + Developer Mode enabled.
+# Pass UDID=<udid> to target a specific device when more than one is
+# attached; otherwise auto-picks the first iPhone listed by devicectl.
+ios-run-device: ios-build-device
+    @APP=$(find build/ios-derived-device/Build/Products/Debug-iphoneos -name 'openbirds.app' -type d | head -1); \
+    [ -n "$APP" ] || { echo "openbirds.app not found" >&2; exit 1; }; \
+    UDID="${UDID:-$(xcrun devicectl list devices --json-output - 2>/dev/null \
+                     | python3 -c 'import sys,json; d=json.load(sys.stdin); \
+                                   print(next((x["hardwareProperties"]["udid"] \
+                                              for x in d.get("result",{}).get("devices",[]) \
+                                              if x.get("connectionProperties",{}).get("transportType")=="wired"), ""))')}"; \
+    [ -n "$UDID" ] || { echo "no wired iPhone found via devicectl; pass UDID=<udid>" >&2; exit 1; }; \
+    echo ">>> installing on $UDID"; \
+    xcrun devicectl device install app --device "$UDID" "$APP"; \
+    echo ">>> launching de.memorici.openbirds"; \
+    xcrun devicectl device process launch --device "$UDID" de.memorici.openbirds
+
 # --- Hygiene ----------------------------------------------------------------
 
 clean:
