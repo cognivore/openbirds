@@ -34,11 +34,30 @@ import pixel
 import framebuffer
 import runtime
 import scene
+import scroll
 import font
 import text
 import truetype/registry
 import truetype/glyph_cache
 import typography_page
+
+// --- scrollable-page cache (process-lifetime ref) -------------------------
+//
+// Composing a scrollable page is ~16ms cold (per the bench).
+// Caching the composed buffers means we only pay that cost on a
+// real change (font registration, viewport resize). The per-frame
+// renderer just samples the cached buffers at the current scroll-y.
+
+pub struct cached-page
+  font-count : int
+  vw         : int
+  vh         : int
+  page       : scrollable-page
+
+pub alias page-cache = ref<global, maybe<cached-page>>
+
+pub fun new-page-cache() : alloc<global> page-cache
+  ref(Nothing)
 
 // --- fallback test pattern (no GIF loaded) -----------------------------------
 
@@ -123,49 +142,61 @@ fun render-frame-pixels(f : decoded-frame, w : width, h : height) : vector<int>
 // real frame index). In Exiting we cache per (frame-ix, w, h) like
 // before.
 
-// Cache key for the idle screen. Negative so it can never collide
-// with a GIF frame index (those are 0..N). The key bakes in the
-// number of registered fonts so the cache invalidates *every time
-// a new font arrives* — fixing the race where the page composes
-// before all fonts have async-loaded and then sticks in the cache
-// missing the late arrivals. Once the registry settles (we expect
-// 5 fonts), the key stabilises and the cache hits steady-state.
-fun idle-cache-key(font-count : int) : int
-  0 - (1 + font-count)
-
 pub fun frame-rgba(s : session, sc : scene-cell, fonts : font-registry, gc : glyph-cache,
+                   sr : scroll-cell, pc : page-cache,
                    now : float64, w-px : int, h-px : int)
         : <pure, read<global>, write<global>> vector<int>
   val w = Width(w-px)
   val h = Height(h-px)
   if show-gif(sc) then render-playing(s, now, w, h, w-px, h-px)
-  else render-idle(s, fonts, gc, w, h, w-px, h-px)
+  else render-idle(fonts, gc, sr, pc, now, w, h, w-px, h-px)
 
-// Idle screen = composed typography page (TYP-SRS-001 acceptance
-// test) with the close-button bar overlaid on the bottom 15%.
-// Cached per-(font-count, w, h); see `idle-cache-key`. The glyph
-// cache amortises rasterisation across cache invalidations: each
-// new font registration invalidates the framebuffer cache, but the
-// per-glyph alpha bitmaps live in the persistent glyph-cache so
-// the next compose only rasterises the genuinely-new glyphs.
-fun render-idle(s : session, fonts : font-registry, gc : glyph-cache,
+// Idle screen = composed scrollable typography page with fixed
+// top + bottom chrome and the body content scrollable in between.
+// We cache the *composed page* (alpha + rgba content + chrome
+// buffers) and re-blit per frame at the current scroll-y. The
+// blit is a flat per-pixel vector lookup so it stays cheap at
+// 60Hz.
+fun render-idle(fonts : font-registry, gc : glyph-cache,
+                sr : scroll-cell, pc : page-cache,
+                now : float64,
                 w : width, h : height, w-px : int, h-px : int)
         : <pure, read<global>, write<global>> vector<int>
-  val key = idle-cache-key(registry-names(fonts).length)
-  match cached-pixels(s, key, w-px, h-px)
-    Just(buf) -> buf
+  val nfonts = registry-names(fonts).length
+  // Look up or refresh the composed-page cache.
+  val sp = match !pc
+    Just(cp) ->
+      if cp.font-count == nfonts && cp.vw == w-px && cp.vh == h-px
+        then cp.page
+        else
+          val fresh = compose-scrollable-page(fonts, gc, w-px, h-px)
+          pc := Just(Cached-page(nfonts, w-px, h-px, fresh))
+          fresh
     Nothing ->
-      val page = compose-page(fonts, gc, w-px, h-px)
-      val buf  = render-idle-pixels(page, w, h)
-      store-pixels(s, key, w-px, h-px, buf)
-      buf
+      val fresh = compose-scrollable-page(fonts, gc, w-px, h-px)
+      pc := Just(Cached-page(nfonts, w-px, h-px, fresh))
+      fresh
+  // Advance scroll physics for this frame.
+  val scrollable-h = h-px - top-band-h(h-px) - bottom-band-h(h-px)
+  scroll/tick(sr, now, sp.content-h, scrollable-h)
+  val sy = get-scroll-y(sr)
+  render-idle-pixels(sp, sy, w, h)
 
-fun render-idle-pixels(page : rendered-page, w : width, h : height) : vector<int>
+// Top chrome band height in pixels. Matches `scrollable-pixel` in
+// typography_page.kk (12% of viewport).
+fun top-band-h(viewport-h : int) : int
+  (viewport-h * 12) / 100
+
+// Bottom button bar height in pixels. Matches button-rect (15%).
+fun bottom-band-h(viewport-h : int) : int
+  viewport-h - (viewport-h * 85 / 100)
+
+fun render-idle-pixels(sp : scrollable-page, scroll-y : int, w : width, h : height) : vector<int>
   val cw = w.pixels
   val ch = h.pixels
   build-pixels(w, h) fn(x, y)
     val bg = if in-button(x.col, y.row, cw, ch) then button-bg-rgba else 255
-    page-pixel(page, x.col, y.row, bg)
+    scrollable-pixel(sp, x.col, y.row, scroll-y, ch, bg)
 
 fun render-playing(s : session, now : float64,
                    w : width, h : height, w-px : int, h-px : int)

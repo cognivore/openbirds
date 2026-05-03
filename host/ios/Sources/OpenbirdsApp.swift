@@ -88,6 +88,11 @@ struct FramebufferView: View {
     // typography (text strokes get the device's native dpi).
     private static let pixelScale: CGFloat = 1.0
 
+    // Drag tracking: SwiftUI's DragGesture only sends `onChanged`
+    // (no separate "began"), so we synthesise pan-start on the
+    // first `onChanged` of a gesture.
+    @State private var isPanning: Bool = false
+
     var body: some View {
         GeometryReader { geo in
             let fbW = max(Int32(geo.size.width  * Self.pixelScale), 1)
@@ -104,12 +109,30 @@ struct FramebufferView: View {
                     }
                     let _ = pollExit()
                 }
+                // Tap + drag handling. The drag gesture wins for any
+                // movement-y over a small threshold; pure taps still
+                // fire the close-button hit-test via `onTapGesture`.
+                // We use a SwiftUI `DragGesture` rather than UIKit's
+                // pan recognizer because SwiftUI's gesture system
+                // composes more cleanly with the tap and we don't
+                // need any UIKit specifics.
                 Color.black.opacity(0.001)
                     .frame(width: geo.size.width, height: geo.size.height)
                     .contentShape(Rectangle())
                     .onTapGesture(coordinateSpace: .local) { location in
                         handleTap(at: location, fbW: fbW, fbH: fbH, container: geo.size)
                     }
+                    .gesture(
+                        DragGesture(minimumDistance: 4, coordinateSpace: .local)
+                            .onChanged { value in
+                                handleDrag(value: value, fbH: fbH, container: geo.size)
+                            }
+                            .onEnded { _ in
+                                let now = CFAbsoluteTimeGetCurrent() - Self.startTime
+                                openbirds_pan_end(now)
+                                isPanning = false
+                            }
+                    )
             }
             .frame(width: geo.size.width, height: geo.size.height)
         }
@@ -131,6 +154,17 @@ struct FramebufferView: View {
               container.width, container.height,
               point.x, point.y, fx, fy, fbW, fbH, now)
         openbirds_tap(Int32(fx), Int32(fy), fbW, fbH, now)
+    }
+
+    private func handleDrag(value: DragGesture.Value, fbH: Int32, container: CGSize) {
+        let now = CFAbsoluteTimeGetCurrent() - Self.startTime
+        let fy  = Double(value.location.y) * Double(fbH) / Double(container.height)
+        if !isPanning {
+            openbirds_pan_start(fy, now)
+            isPanning = true
+        } else {
+            openbirds_pan_move(fy, now)
+        }
     }
 
     private func pollExit() -> Bool {

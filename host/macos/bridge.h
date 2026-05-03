@@ -80,6 +80,18 @@ void openbirds_tap(int32_t x, int32_t y,
 // transition Done").
 int32_t openbirds_should_exit(double now_seconds);
 
+// --- pan / scroll input (Stage 5) ----------------------------------------
+//
+// Three-call pan gesture API: start when finger touches down, move
+// for every drag update, end when finger lifts. `y` is in
+// framebuffer-pixel coordinates; `t` is the same monotonic clock
+// the renderer uses (CFAbsoluteTimeGetCurrent minus app start).
+// The brain integrates these into a momentum-decaying scroll-y
+// that the renderer crops the composed page at.
+void openbirds_pan_start(double y, double t);
+void openbirds_pan_move (double y, double t);
+void openbirds_pan_end  (double t);
+
 #ifdef __cplusplus
 }
 #endif

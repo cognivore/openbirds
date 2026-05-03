@@ -79,6 +79,11 @@ extern kk_ref_t kk_truetype_registry_new_font_registry(kk_context_t* _ctx);
 extern kk_unit_t kk_truetype_registry_register(kk_ref_t r, kk_string_t name,
     kk_vector_t bytes, kk_context_t* _ctx);
 extern kk_ref_t kk_truetype_glyph__cache_new_glyph_cache(kk_context_t* _ctx);
+extern kk_ref_t kk_scroll_new_scroll_cell(kk_context_t* _ctx);
+extern kk_unit_t kk_scroll_pan_start(kk_ref_t c, double y, double t, kk_context_t* _ctx);
+extern kk_unit_t kk_scroll_pan_move(kk_ref_t c, double y, double t, kk_context_t* _ctx);
+extern kk_unit_t kk_scroll_pan_end(kk_ref_t c, double t, kk_context_t* _ctx);
+extern kk_ref_t kk_render_new_page_cache(kk_context_t* _ctx);
 
 // --- session lifecycle ------------------------------------------------------
 
@@ -91,6 +96,10 @@ static kk_ref_t      g_fonts;
 static bool          g_fonts_init       = false;
 static kk_ref_t      g_glyphs;
 static bool          g_glyphs_init      = false;
+static kk_ref_t      g_scroll;
+static bool          g_scroll_init      = false;
+static kk_ref_t      g_pcache;
+static bool          g_pcache_init      = false;
 
 static kk_context_t* ensure_ctx(void) {
     if (g_ctx == NULL) {
@@ -124,6 +133,22 @@ static kk_ref_t borrow_glyphs(kk_context_t* ctx) {
     return kk_ref_dup(g_glyphs, ctx);
 }
 
+static kk_ref_t borrow_scroll(kk_context_t* ctx) {
+    if (!g_scroll_init) {
+        g_scroll      = kk_scroll_new_scroll_cell(ctx);
+        g_scroll_init = true;
+    }
+    return kk_ref_dup(g_scroll, ctx);
+}
+
+static kk_ref_t borrow_pcache(kk_context_t* ctx) {
+    if (!g_pcache_init) {
+        g_pcache      = kk_render_new_page_cache(ctx);
+        g_pcache_init = true;
+    }
+    return kk_ref_dup(g_pcache, ctx);
+}
+
 // Lazily create the Koka-side session ref the first time something
 // needs it (load-gif or render). The bridge holds ONE reference for
 // the process lifetime; per-call we `kk_ref_dup` so each Koka call
@@ -154,6 +179,14 @@ void openbirds_shutdown(void) {
         if (g_glyphs_init) {
             kk_ref_drop(g_glyphs, g_ctx);
             g_glyphs_init = false;
+        }
+        if (g_scroll_init) {
+            kk_ref_drop(g_scroll, g_ctx);
+            g_scroll_init = false;
+        }
+        if (g_pcache_init) {
+            kk_ref_drop(g_pcache, g_ctx);
+            g_pcache_init = false;
         }
         kk_hello__main__done(g_ctx);
         kk_main_end(g_ctx);
@@ -268,10 +301,12 @@ void openbirds_render_frame(double now_seconds,
     kk_ref_t      sc  = borrow_scene(ctx);
     kk_ref_t      fr  = borrow_fonts(ctx);
     kk_ref_t      gc  = borrow_glyphs(ctx);
+    kk_ref_t      sr  = borrow_scroll(ctx);
+    kk_ref_t      pc  = borrow_pcache(ctx);
 
     kk_integer_t w = kk_integer_from_int32(width_px, ctx);
     kk_integer_t h = kk_integer_from_int32(height_px, ctx);
-    kk_vector_t  v = kk_render_frame_rgba(s, sc, fr, gc, now_seconds, w, h, ctx);
+    kk_vector_t  v = kk_render_frame_rgba(s, sc, fr, gc, sr, pc, now_seconds, w, h, ctx);
 
     kk_ssize_t len = 0;
     const kk_box_t* boxes = kk_vector_buf_borrow(v, &len, ctx);
@@ -355,4 +390,30 @@ int32_t openbirds_should_exit(double now_seconds) {
     bool          ex  = kk_scene_should_exit(sc, now_seconds, ctx);
     pthread_mutex_unlock(&g_lock);
     return ex ? 1 : 0;
+}
+
+// --- pan / scroll handlers (Stage 5/scroll) --------------------------------
+
+void openbirds_pan_start(double y, double t) {
+    pthread_mutex_lock(&g_lock);
+    kk_context_t* ctx = ensure_ctx();
+    kk_ref_t      sr  = borrow_scroll(ctx);
+    kk_scroll_pan_start(sr, y, t, ctx);
+    pthread_mutex_unlock(&g_lock);
+}
+
+void openbirds_pan_move(double y, double t) {
+    pthread_mutex_lock(&g_lock);
+    kk_context_t* ctx = ensure_ctx();
+    kk_ref_t      sr  = borrow_scroll(ctx);
+    kk_scroll_pan_move(sr, y, t, ctx);
+    pthread_mutex_unlock(&g_lock);
+}
+
+void openbirds_pan_end(double t) {
+    pthread_mutex_lock(&g_lock);
+    kk_context_t* ctx = ensure_ctx();
+    kk_ref_t      sr  = borrow_scroll(ctx);
+    kk_scroll_pan_end(sr, t, ctx);
+    pthread_mutex_unlock(&g_lock);
 }
