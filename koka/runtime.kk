@@ -99,7 +99,10 @@ pub fun load-gif(s : session, bytes : vector<int>)
 // entry) so the per-pixel render path can read a single immediate
 // int per pixel — no `Rgba` struct allocations in the hot loop.
 fun decode-frame-of(g : gif, f : gif-frame) : pure decoded-frame
-  val decoded = lzw/decode(f.lzw-min-code, f.raw-lzw)
+  val gw = f.desc.width.pixels
+  val gh = f.desc.height.pixels
+  val expected = gw * gh
+  val decoded = lzw/decode-vec(f.lzw-min-code, f.raw-lzw.vector, expected)
   val pal-list = match f.local-palette
     Just(p) -> p
     Nothing -> match g.global-palette
@@ -107,11 +110,9 @@ fun decode-frame-of(g : gif, f : gif-frame) : pure decoded-frame
       Nothing -> Palette([])
   val pal-vec = pal-list.entries.map fn(t)
     pack-rgb(t.red.byte, t.green.byte, t.blue.byte)
-  val gw = f.desc.width.pixels
-  val gh = f.desc.height.pixels
   val pixel-vec = if f.desc.packed.interlaced
-    then deinterlace(decoded.vector, gw, gh)
-    else decoded.vector
+    then deinterlace(decoded, gw, gh)
+    else decoded
   Decoded-frame(
     width    = f.desc.width,
     height   = f.desc.height,
