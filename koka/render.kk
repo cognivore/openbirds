@@ -111,51 +111,73 @@ fun button-pixel(x : int, y : int, w : int, h : int) : int
   else button-bg-rgba
 
 // Per-pixel render of one decoded frame at the given output size.
-// Composites the close-button overlay on top of the GIF when
-// `show-button` is true (i.e. scene is Idle).
 // `vector-init-total` dispatches to kklib's `kk_vector_init_total`
-// (single alloc + tight C-side loop).
-fun render-frame-pixels(f : decoded-frame, w : width, h : height,
-                        show-button : bool) : vector<int>
-  val cw = w.pixels
-  val ch = h.pixels
+// (single alloc + tight C-side loop). The button is hidden during
+// playback — Lucile takes the whole screen as the user's goodbye.
+fun render-frame-pixels(f : decoded-frame, w : width, h : height) : vector<int>
   build-pixels(w, h) fn(x, y)
-    if show-button && in-button(x.col, y.row, cw, ch)
-      then button-pixel(x.col, y.row, cw, ch)
-      else gif-pixel-at(f, x, y, w, h)
+    gif-pixel-at(f, x, y, w, h)
 
 // --- entry point ------------------------------------------------------------
 //
-// Takes both the GIF session AND the scene-cell so the renderer
-// knows whether to draw the close-button overlay (visible while
-// Idle, hidden during the goodbye animation).
+// Takes both the GIF session AND the scene-cell. Two scene
+// branches:
 //
-// The rendered-pixels cache key includes a "show-button" bool so
-// the cache invalidates exactly once when the user taps close.
+//   Idle              → render the close-button screen (black bar
+//                       with the X glyph, GIF NOT sampled). Lucile
+//                       is the goodbye, not the mood.
+//   Exiting / Done    → render the GIF full-screen, button hidden.
+//
+// In both branches the rendered-pixels cache helps: in Idle the
+// frame is static, so the same cached vector is returned every
+// tick (cache key = -1, a sentinel that can never collide with a
+// real frame index). In Exiting we cache per (frame-ix, w, h) like
+// before.
+
+val idle-screen-key : int = -1   // cache sentinel for the static idle frame
 
 pub fun frame-rgba(s : session, sc : scene-cell, now : float64, w-px : int, h-px : int)
         : <pure, read<global>, write<global>> vector<int>
   val w = Width(w-px)
   val h = Height(h-px)
-  val show-button = button-visible(sc)
-  match frame-ix-now(s, now)
-    Just(ix) ->
-      val key-ix = if show-button then ix else 0 - ix - 1
-      match cached-pixels(s, key-ix, w-px, h-px)
-        Just(buf) -> buf
-        Nothing ->
-          match current-frame(s, now)
-            Just(f) ->
-              val buf = render-frame-pixels(f, w, h, show-button)
-              store-pixels(s, key-ix, w-px, h-px, buf)
-              buf
-            Nothing -> render-fallback(now, w, h, show-button)
-    Nothing -> render-fallback(now, w, h, show-button)
+  if show-gif(sc) then render-playing(s, now, w, h, w-px, h-px)
+  else render-idle(s, w, h, w-px, h-px)
 
-fun render-fallback(now : float64, w : width, h : height, show-button : bool) : vector<int>
+// Static black + close-button screen. Cached once and reused across
+// every Idle tick (the cache lives inside the loaded-gif if one is
+// loaded; otherwise we pay ~5 ms per tick to re-render — acceptable
+// since the load happens within a couple of seconds of launch).
+fun render-idle(s : session, w : width, h : height, w-px : int, h-px : int)
+        : <pure, read<global>, write<global>> vector<int>
+  match cached-pixels(s, idle-screen-key, w-px, h-px)
+    Just(buf) -> buf
+    Nothing ->
+      val buf = render-idle-pixels(w, h)
+      store-pixels(s, idle-screen-key, w-px, h-px, buf)
+      buf
+
+fun render-idle-pixels(w : width, h : height) : vector<int>
   val cw = w.pixels
   val ch = h.pixels
   build-pixels(w, h) fn(x, y)
-    if show-button && in-button(x.col, y.row, cw, ch)
-      then button-pixel(x.col, y.row, cw, ch)
-      else checkerboard-at(now, x, y)
+    if in-button(x.col, y.row, cw, ch) then button-pixel(x.col, y.row, cw, ch)
+    else 255         // 0x000000FF — opaque black
+
+fun render-playing(s : session, now : float64,
+                   w : width, h : height, w-px : int, h-px : int)
+        : <pure, read<global>, write<global>> vector<int>
+  match frame-ix-now(s, now)
+    Just(ix) -> match cached-pixels(s, ix, w-px, h-px)
+      Just(buf) -> buf
+      Nothing ->
+        match current-frame(s, now)
+          Just(f) ->
+            val buf = render-frame-pixels(f, w, h)
+            store-pixels(s, ix, w-px, h-px, buf)
+            buf
+          Nothing -> render-fallback(now, w, h)
+    Nothing -> render-fallback(now, w, h)
+
+fun render-fallback(now : float64, w : width, h : height) : vector<int>
+  build-pixels(w, h) fn(x, y)
+    checkerboard-at(now, x, y)

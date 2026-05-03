@@ -71,8 +71,9 @@ extern void kk_koka_hello__main__done(kk_context_t* _ctx);
 extern kk_ref_t kk_scene_new_scene_cell(kk_context_t* _ctx);
 extern kk_unit_t kk_scene_handle_tap(kk_ref_t s,
     kk_integer_t x, kk_integer_t y, kk_integer_t w, kk_integer_t h,
-    double now, kk_context_t* _ctx);
+    double exit_at_s, kk_context_t* _ctx);
 extern bool kk_scene_should_exit(kk_ref_t s, double now, kk_context_t* _ctx);
+extern double kk_runtime_gif_duration_s(kk_ref_t s, kk_context_t* _ctx);
 
 // --- session lifecycle ------------------------------------------------------
 
@@ -275,11 +276,19 @@ void openbirds_tap(int32_t x, int32_t y,
     pthread_mutex_lock(&g_lock);
     kk_context_t* ctx = ensure_ctx();
     kk_ref_t      sc  = borrow_scene(ctx);
+    kk_ref_t      sg  = borrow_session(ctx);
+    // Compute the goodbye-animation deadline as `now + gif-duration`
+    // so scene.kk doesn't need to know about runtime.kk. If no GIF
+    // is loaded yet (e.g. tap landed during the load race) we fall
+    // back to a 3-second timeout so the user still gets out.
+    double dur = kk_runtime_gif_duration_s(sg, ctx);
+    if (dur <= 0.0) dur = 3.0;
+    const double exit_at_s = now_seconds + dur;
     kk_integer_t kx = kk_integer_from_int32(x, ctx);
     kk_integer_t ky = kk_integer_from_int32(y, ctx);
     kk_integer_t kw = kk_integer_from_int32(width_px, ctx);
     kk_integer_t kh = kk_integer_from_int32(height_px, ctx);
-    kk_scene_handle_tap(sc, kx, ky, kw, kh, now_seconds, ctx);
+    kk_scene_handle_tap(sc, kx, ky, kw, kh, exit_at_s, ctx);
     pthread_mutex_unlock(&g_lock);
 }
 

@@ -68,17 +68,48 @@ openbirds/
   flake.lock
   nix/
     package.nix              # builds the current "main" artifact
-  koka/
+  koka/                      # the brain — pure Koka, all app logic
     hello.kk                 # Stage 0: prints from Koka
+    pixel.kk                 # tightly-typed coords + colours
+    framebuffer.kk           # build-pixels (FBIP-friendly per-pixel emit)
+    gif.kk                   # GIF89a parser
+    lzw.kk                   # LZW decoder (vector-backed, ~5 ms/frame)
+    runtime.kk               # session state + lazy decode + render cache
+    render.kk                # per-frame compositor (GIF + button overlay)
+    scene.kk                 # UI state machine (Idle | Exiting | Done)
+    host.kk + host-ffi.c     # <host> effect handler + POSIX bodies
   host/                      # Stage 1+: thin per-platform shells
-    macos/                   # SwiftPM CLI host that calls Koka via C ABI
-    ios/                     # xcodegen project + SwiftUI app + Koka static lib (after Xcode installs)
+    macos/                   # SwiftPM CLI host + bridge.{c,h} + test_tap.c
+    ios/                     # xcodegen project + SwiftUI app + Koka static lib
     android/                 # Gradle module + Kotlin shell + Koka shared lib (later)
+  docs/notes/                # repo-committed engineering notes (see below)
   Justfile                   # the only sanctioned entry point for builds
   CLAUDE.md                  # this file
   README.md
   secret/                    # personal Finch export, gitignored
 ```
+
+## Engineering notes
+
+Project-relevant gotchas and architectural decisions are committed
+under `docs/notes/`. Read these before changing the affected area:
+
+- [`docs/notes/architecture.md`](docs/notes/architecture.md) — stack
+  + the rejections that justify Koka (Rust, Flutter, Haskell, OCaml 5)
+- [`docs/notes/thin-shell.md`](docs/notes/thin-shell.md) —
+  mcmonad-style: Swift is a thin servant, Koka owns rendering /
+  state / lifecycle / UI widgets
+- [`docs/notes/declarative-workflow.md`](docs/notes/declarative-workflow.md) —
+  no IDE clicking; xcodegen + xcodebuild + simctl + Justfile
+- [`docs/notes/koka-perf-traps.md`](docs/notes/koka-perf-traps.md) —
+  `kk_vector_unsafe_assign` drops the vector; Koka's TCO only fires
+  on direct self-recursion. Hot-loop patterns from `koka/lzw.kk`.
+- [`docs/notes/xcode-26-link-traps.md`](docs/notes/xcode-26-link-traps.md) —
+  `ENABLE_DEBUG_DYLIB=NO` + `LD=clang` + clang module map (NOT a
+  bridging header) for Xcode 26.x
+- [`docs/notes/kklib-ios-fork.md`](docs/notes/kklib-ios-fork.md) —
+  kklib's `os.c` doesn't compile for iOS; current workaround +
+  upstream PR sketch
 
 ## Stage map (where we are)
 

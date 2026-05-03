@@ -197,6 +197,14 @@ pub fun frame-ix-now(s : session, now : float64)
       val now-cs = (now * 100.0).floor.int
       Just(pick-frame-index(g.parsed.frames, g.total-cs, now-cs))
 
+// Total animation duration in seconds, or 0 if no GIF is loaded.
+// Used by the bridge to compute the goodbye-animation deadline
+// when the user taps the close button.
+pub fun gif-duration-s(s : session) : <read<global>> float64
+  match !s
+    Nothing -> 0.0
+    Just(g) -> g.total-cs.float64 / 100.0
+
 // `cached-pixels(s, ix, w, h)` — Just(buf) if the rendered cache
 // holds a buffer for exactly this (frame-ix, w, h); Nothing if the
 // cache is empty, mismatched, or no GIF is loaded.
