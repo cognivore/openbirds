@@ -21,6 +21,7 @@ import truetype/font
 import truetype/raster
 import truetype/metrics
 import truetype/cmap
+import truetype/names
 import typography_page
 
 extern import
@@ -90,6 +91,23 @@ pub fun main() : io ()
   load-font(reg, "Terminus",          dir, "TerminusTTF.ttf")
 
   println("bench: registry has " ++ registry-names(reg).length.show ++ " fonts")
+
+  // Sanity-check the name table parser by printing each loaded
+  // font's self-reported family + full + postscript names.
+  registry-names(reg).foreach fn(name)
+    match lookup(reg, name)
+      Nothing -> ()
+      Just(info) ->
+        match error/try({
+          val fam = get-family-name(info)
+          val ful = get-full-name(info)
+          val psn = get-postscript-name(info)
+          (fam, ful, psn)
+        })
+          Ok((fam, ful, psn)) ->
+            println("bench: " ++ name ++ " self-reports as: family=" ++ fam ++
+                    " full=" ++ ful ++ " ps=" ++ psn)
+          Error(_) -> ()
 
   // Reference iPhone-17-Pro-class viewport.
   val w = 393
