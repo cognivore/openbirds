@@ -75,9 +75,9 @@ extern kk_unit_t kk_scene_handle_tap(kk_ref_t s,
     kk_integer_t x, kk_integer_t y, kk_integer_t w, kk_integer_t h,
     double exit_at_s, kk_context_t* _ctx);
 extern kk_unit_t kk_render_handle_tap_scrolled(kk_ref_t s, kk_ref_t sr, kk_ref_t pc,
-    kk_integer_t vx, kk_integer_t vy, double exit_at_s, kk_context_t* _ctx);
+    kk_ref_t spec, kk_integer_t vx, kk_integer_t vy, double exit_at_s, kk_context_t* _ctx);
 extern kk_integer_t kk_scroll_get_scroll_y(kk_ref_t c, kk_context_t* _ctx);
-extern kk_integer_t kk_render_would_close_tap(kk_ref_t sr, kk_ref_t pc,
+extern kk_integer_t kk_render_would_close_tap(kk_ref_t sr, kk_ref_t pc, kk_ref_t spec,
     kk_integer_t vx, kk_integer_t vy, kk_context_t* _ctx);
 extern kk_std_core_types__tuple4 kk_render_cached_x_rect(kk_ref_t pc, kk_context_t* _ctx);
 extern kk_std_core_types__tuple4 kk_render_cached_close_rect(kk_ref_t pc, kk_context_t* _ctx);
@@ -92,6 +92,12 @@ extern kk_unit_t kk_scroll_pan_start(kk_ref_t c, double y, double t, kk_context_
 extern kk_unit_t kk_scroll_pan_move(kk_ref_t c, double y, double t, kk_context_t* _ctx);
 extern kk_unit_t kk_scroll_pan_end(kk_ref_t c, double t, kk_context_t* _ctx);
 extern kk_ref_t kk_render_new_page_cache(kk_context_t* _ctx);
+extern kk_ref_t kk_render_new_spec_cell(kk_context_t* _ctx);
+extern kk_unit_t kk_render_set_spec(kk_ref_t c,
+    kk_integer_t w, kk_integer_t h,
+    kk_integer_t safe_top, kk_integer_t safe_leading,
+    kk_integer_t safe_trailing, kk_integer_t safe_bottom,
+    kk_integer_t corner_radius, kk_context_t* _ctx);
 
 // --- session lifecycle ------------------------------------------------------
 
@@ -108,6 +114,8 @@ static kk_ref_t      g_scroll;
 static bool          g_scroll_init      = false;
 static kk_ref_t      g_pcache;
 static bool          g_pcache_init      = false;
+static kk_ref_t      g_spec;
+static bool          g_spec_init        = false;
 
 static kk_context_t* ensure_ctx(void) {
     if (g_ctx == NULL) {
@@ -157,6 +165,14 @@ static kk_ref_t borrow_pcache(kk_context_t* ctx) {
     return kk_ref_dup(g_pcache, ctx);
 }
 
+static kk_ref_t borrow_spec(kk_context_t* ctx) {
+    if (!g_spec_init) {
+        g_spec      = kk_render_new_spec_cell(ctx);
+        g_spec_init = true;
+    }
+    return kk_ref_dup(g_spec, ctx);
+}
+
 // Lazily create the Koka-side session ref the first time something
 // needs it (load-gif or render). The bridge holds ONE reference for
 // the process lifetime; per-call we `kk_ref_dup` so each Koka call
@@ -195,6 +211,10 @@ void openbirds_shutdown(void) {
         if (g_pcache_init) {
             kk_ref_drop(g_pcache, g_ctx);
             g_pcache_init = false;
+        }
+        if (g_spec_init) {
+            kk_ref_drop(g_spec, g_ctx);
+            g_spec_init = false;
         }
         kk_hello__main__done(g_ctx);
         kk_main_end(g_ctx);
@@ -282,8 +302,19 @@ void openbirds_load_font(const char* name, const uint8_t* bytes, int32_t len) {
 // The Koka side memoises the rendered buffer per (frame-ix, w, h),
 // so on every TimelineView tick where the active frame and size
 // haven't changed, the only work here is the unbox + splat loop.
+//
+// `safe_*` and `corner_radius_px` describe the platform-presentation
+// context — the host shell measures them (UIKit safeAreaInsets,
+// UIScreen `_displayCornerRadius`, Android's WindowInsets, etc.)
+// and passes them per-frame. The renderer caches the composed
+// page per viewport-spec, so a stable platform context is
+// effectively zero overhead; rotation / split-view / accessory
+// connect / window resize all naturally invalidate the cache.
 void openbirds_render_frame(double now_seconds,
                             int32_t width_px, int32_t height_px,
+                            int32_t safe_top, int32_t safe_leading,
+                            int32_t safe_trailing, int32_t safe_bottom,
+                            int32_t corner_radius_px,
                             uint8_t* out_buffer) {
     if (out_buffer == NULL || width_px <= 0 || height_px <= 0) return;
 
@@ -311,10 +342,22 @@ void openbirds_render_frame(double now_seconds,
     kk_ref_t      gc  = borrow_glyphs(ctx);
     kk_ref_t      sr  = borrow_scroll(ctx);
     kk_ref_t      pc  = borrow_pcache(ctx);
+    kk_ref_t      spec = borrow_spec(ctx);
 
-    kk_integer_t w = kk_integer_from_int32(width_px, ctx);
-    kk_integer_t h = kk_integer_from_int32(height_px, ctx);
-    kk_vector_t  v = kk_render_frame_rgba(s, sc, fr, gc, sr, pc, now_seconds, w, h, ctx);
+    // Refresh the viewport-spec for this frame. Cheap (heap
+    // allocation of one struct + one ref-set); the page-cache
+    // detects no-change via viewport-spec-eq and short-circuits.
+    kk_render_set_spec(kk_ref_dup(spec, ctx),
+        kk_integer_from_int32(width_px, ctx),
+        kk_integer_from_int32(height_px, ctx),
+        kk_integer_from_int32(safe_top, ctx),
+        kk_integer_from_int32(safe_leading, ctx),
+        kk_integer_from_int32(safe_trailing, ctx),
+        kk_integer_from_int32(safe_bottom, ctx),
+        kk_integer_from_int32(corner_radius_px, ctx),
+        ctx);
+
+    kk_vector_t  v = kk_render_frame_rgba(s, sc, fr, gc, sr, pc, spec, now_seconds, ctx);
 
     kk_ssize_t len = 0;
     const kk_box_t* boxes = kk_vector_buf_borrow(v, &len, ctx);
@@ -380,6 +423,7 @@ void openbirds_tap(int32_t x, int32_t y,
     kk_ref_t      sg  = borrow_session(ctx);
     kk_ref_t      sr  = borrow_scroll(ctx);
     kk_ref_t      pc  = borrow_pcache(ctx);
+    kk_ref_t      spec = borrow_spec(ctx);
     // Compute the goodbye-animation deadline as `now + gif-duration`
     // so scene.kk doesn't need to know about runtime.kk. If no GIF
     // is loaded yet (e.g. tap landed during the load race) we fall
@@ -395,20 +439,16 @@ void openbirds_tap(int32_t x, int32_t y,
     kk_integer_t  syk = kk_scroll_get_scroll_y(sr2, ctx);
     int32_t       sy  = kk_integer_clamp32_borrow(syk, ctx);
     // Diagnostic — ask Koka if the tap would hit a close rect.
-    // Avoids the per-call rect math in C and gives a clean
-    // pass/fail signal in the log.
-    kk_ref_t      pc2 = borrow_pcache(ctx);
-    kk_integer_t  hk  = kk_render_would_close_tap(sr2, pc2,
+    // Filters off-screen taps via the rounded-rect check too.
+    kk_ref_t      pc2  = borrow_pcache(ctx);
+    kk_ref_t      spec2 = borrow_spec(ctx);
+    kk_integer_t  hk   = kk_render_would_close_tap(sr2, pc2, spec2,
                             kk_integer_from_int32(x, ctx),
                             kk_integer_from_int32(y, ctx), ctx);
-    int32_t       hit = kk_integer_clamp32_borrow(hk, ctx);
+    int32_t       hit  = kk_integer_clamp32_borrow(hk, ctx);
     os_log(OS_LOG_DEFAULT, "openbirds.bridge.tap viewport=(%d,%d) scroll-y=%d → content=(%d,%d) would-close=%d exit_at_s=%.3f",
            x, y, sy, x, y + sy, hit, exit_at_s);
-    // The scrolled-tap dispatcher reads scroll-y, looks up the
-    // [X] / CLOSE rects from the cached scrollable-page, and
-    // converts the viewport tap to content coords for the rect
-    // check. If neither rect contains the tap, nothing happens.
-    kk_render_handle_tap_scrolled(sc, sr, pc, kx, ky, exit_at_s, ctx);
+    kk_render_handle_tap_scrolled(sc, sr, pc, spec, kx, ky, exit_at_s, ctx);
     os_log(OS_LOG_DEFAULT, "openbirds.bridge.tap returned");
     pthread_mutex_unlock(&g_lock);
 }

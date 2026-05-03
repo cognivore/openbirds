@@ -29,6 +29,7 @@ import truetype/raster
 import truetype/text
 import truetype/metrics
 import truetype/glyph_cache
+import viewport
 
 // --- text wrapping helper --------------------------------------------------
 
@@ -244,24 +245,29 @@ fun layout(reg : font-registry, w : int, h : int) : <div, read<global>> list<run
 // whichever of [X] or CLOSE is currently visible — the hit-test in
 // `scene.kk` checks both content-rects against the tap converted
 // to content coords via scroll-y.
-pub fun layout-content(reg : font-registry, w : int, viewport-h : int)
+pub fun layout-content(reg : font-registry, vs : viewport-spec)
         : <div, read<global>> content-layout
+  val w          = vs.vp.width
+  val viewport-h = vs.vp.height
+  val (sx0, sy0, sx1, _sy1) = safe-rect(vs)
   fun hpct(p : int) : int
     val v = (p * viewport-h) / 1000
     if v < 6 then 6 else v
   val pad      = hpct(28)
-  val left     = pad
-  val text-w   = w - 2 * pad
+  val left     = sx0 + pad
+  val text-w   = (sx1 - sx0) - 2 * pad
 
   // ----- chrome row at top of content -----------------------------------
-  // Pushed below the iOS status-bar safe area (~50 logical px on
-  // iPhone 17 Pro). The tap on [X] needs to land below the system
-  // status-bar — taps in y < ~50 get intercepted as
-  // UIStatusBarTapAction (scroll-to-top) and never reach our view.
-  val chrome-y = hpct(140)
+  // Anchored to safe-rect top + a small margin. The viewport-spec
+  // tells us where the system chrome (status bar / Dynamic Island
+  // / notch) lives; we put our [X] just below that. No
+  // platform-specific hpct fudge — the safe-area inset *is* the
+  // platform-specific knowledge, and it's the host shell's job to
+  // supply it.
+  val chrome-y = sy0 + hpct(80)
   val x-w      = hpct(120)
   val x-h      = hpct(120)
-  val x-x0     = w - x-w - pad
+  val x-x0     = sx1 - x-w - pad
   val x-y0     = chrome-y - x-h * 2 / 3
   val r-menu   = Run("menu",   "TerminalGrotesque", hpct(34), left,                chrome-y, accent-rgba)
   val r-main   = Run("main()", "Terminus",          hpct(30), left + hpct(120),    chrome-y, mono-rgba)
@@ -338,6 +344,8 @@ pub fun layout-content(reg : font-registry, w : int, viewport-h : int)
     Run(line, "EBGaramond", body-sz, left, bodyf-y + i * body-step, ink-rgba)
 
   // ----- CLOSE button at bottom of content ------------------------------
+  // Bottom margin uses the safe-area bottom inset so the home
+  // indicator doesn't sit on top of the CLOSE label.
   val close-band-h  = hpct(180)
   val close-band-y0 = bodyf-y + bf-lines.length * body-step + hpct(80)
   val close-sz      = (close-band-h * 50) / 100
@@ -353,7 +361,9 @@ pub fun layout-content(reg : font-registry, w : int, viewport-h : int)
       ba-runs ++ code-runs ++ bb-runs ++ pull-runs ++
       bc-runs ++ bd-runs ++ be-runs ++ bf-runs ++
     [ r-close ]
-  val content-h = close-band-y0 + close-band-h + hpct(40)
+  // Trailing margin = bottom safe inset + a comfort gap so the
+  // home indicator doesn't kiss CLOSE on devices that have one.
+  val content-h = close-band-y0 + close-band-h + vs.safe.bottom + hpct(40)
   Content-layout(all-runs, content-h, x-rect, close-rect)
 
 // --- composition ---------------------------------------------------------
@@ -429,6 +439,12 @@ pub fun compose-page(reg : font-registry, gc : glyph-cache, w : int, h : int)
   draw-runs(p, reg, gc, layout(reg, w, h))
   p
 
+// Bench-friendly variant that takes a viewport-spec.
+pub fun compose-scrollable-page-from-bare(reg : font-registry, gc : glyph-cache,
+                                          w : int, h : int)
+        : <div, read<global>, write<global>> scrollable-page
+  compose-scrollable-page(reg, gc, bare-spec(w, h))
+
 // --- scrollable composition -----------------------------------------------
 
 // Single content buffer + the close-rects (in CONTENT coords) +
@@ -443,11 +459,11 @@ pub struct scrollable-page
   close-rect   : (int, int, int, int)
 
 pub fun compose-scrollable-page(reg : font-registry, gc : glyph-cache,
-                                viewport-w : int, viewport-h : int)
+                                vs : viewport-spec)
         : <div, read<global>, write<global>> scrollable-page
-  val cl = layout-content(reg, viewport-w, viewport-h)
-  val content-h-clamped = if cl.height-px < viewport-h then viewport-h else cl.height-px
-  val cp = blank-page(viewport-w, content-h-clamped)
+  val cl = layout-content(reg, vs)
+  val content-h-clamped = if cl.height-px < vs.vp.height then vs.vp.height else cl.height-px
+  val cp = blank-page(vs.vp.width, content-h-clamped)
   draw-runs(cp, reg, gc, cl.runs)
   Scrollable-page(cp, content-h-clamped, cl.x-rect, cl.close-rect)
 

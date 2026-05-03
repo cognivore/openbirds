@@ -40,6 +40,7 @@ import text
 import truetype/registry
 import truetype/glyph_cache
 import typography_page
+import viewport
 
 // --- scrollable-page cache (process-lifetime ref) -------------------------
 //
@@ -48,16 +49,46 @@ import typography_page
 // real change (font registration, viewport resize). The per-frame
 // renderer just samples the cached buffers at the current scroll-y.
 
+// Cache key bakes in the *full* viewport-spec so any change to the
+// safe-area insets or rounded-corner radii invalidates and forces
+// a recompose. Rotation, split-screen, accessory connect — every
+// transition that changes platform presentation lands here.
 pub struct cached-page
   font-count : int
-  vw         : int
-  vh         : int
+  spec       : viewport-spec
   page       : scrollable-page
 
 pub alias page-cache = ref<global, maybe<cached-page>>
 
 pub fun new-page-cache() : alloc<global> page-cache
   ref(Nothing)
+
+// --- viewport-spec cell (process-lifetime) -------------------------------
+//
+// The bridge sets this from Swift's GeometryReader + UIScreen
+// values whenever they change. The renderer reads the latest spec
+// each frame. Heap-cell so the bridge can `kk_ref_dup` / `set` it
+// concretely without threading a value through the FFI boundary.
+
+pub alias spec-cell = ref<global, viewport-spec>
+
+pub fun new-spec-cell() : alloc<global> spec-cell
+  ref(bare-spec(0, 0))
+
+pub fun set-spec(c : spec-cell,
+                 w : int, h : int,
+                 safe-top : int, safe-leading : int,
+                 safe-trailing : int, safe-bottom : int,
+                 corner-radius : int)
+        : <read<global>, write<global>> ()
+  c := Viewport-spec(
+    Viewport(w, h),
+    Insets(safe-top, safe-leading, safe-trailing, safe-bottom),
+    uniform-rounding(corner-radius)
+  )
+
+pub fun get-spec(c : spec-cell) : <read<global>> viewport-spec
+  !c
 
 // Bridge-facing accessors for the cached scrollable-page's hit
 // rects. Both return `(0,0,0,0)` if the cache is empty (= app
@@ -77,28 +108,44 @@ pub fun cached-close-rect(pc : page-cache) : <read<global>> (int, int, int, int)
 // handle-tap-on-rects with the cached close-rects in CONTENT
 // coords. Bridge calls this instead of `kk_scene_handle_tap`
 // directly so the rect lookup happens behind the FFI seam.
+//
+// Filters the tap through `is-on-screen` first — taps that land
+// outside the rounded screen silhouette (rare for finger touches
+// but possible for stylus / accessibility input) are ignored. The
+// safe-area constraint is NOT applied here because the user might
+// legitimately tap inside system-chrome zones for our content
+// (we own that decision; the scene-state guard just rejects
+// out-of-band events).
 pub fun handle-tap-scrolled(s : scene-cell, sr : scroll-cell, pc : page-cache,
+                            spec : spec-cell,
                             vx : int, vy : int, exit-at-s : float64)
         : <read<global>, write<global>> ()
-  val sy = get-scroll-y(sr)
-  val xr = cached-x-rect(pc)
-  val cr = cached-close-rect(pc)
-  handle-tap-on-rects(s, vx, vy + sy, xr, cr, exit-at-s)
+  val vs = get-spec(spec)
+  if !is-on-screen(vs, vx, vy) then ()
+  else
+    val sy = get-scroll-y(sr)
+    val xr = cached-x-rect(pc)
+    val cr = cached-close-rect(pc)
+    handle-tap-on-rects(s, vx, vy + sy, xr, cr, exit-at-s)
 
-// Bridge-facing diagnostic: did the most recent tap hit a close
-// rect? Used by `openbirds_tap` to log a clear pass/fail signal
-// without doing the rect math in C. Returns 1 on hit, 0 on miss.
-pub fun would-close-tap(sr : scroll-cell, pc : page-cache,
+// Bridge-facing diagnostic: would the most recent tap hit a
+// close rect? Used by `openbirds_tap` to log a pass/fail signal
+// without doing the rect math in C. 1 on hit, 0 on miss / off
+// screen.
+pub fun would-close-tap(sr : scroll-cell, pc : page-cache, spec : spec-cell,
                         vx : int, vy : int) : <read<global>> int
-  val sy = get-scroll-y(sr)
-  val xr = cached-x-rect(pc)
-  val cr = cached-close-rect(pc)
-  val cy = vy + sy
-  val (xx0, xy0, xx1, xy1) = xr
-  val (cx0, cy0, cx1, cy1) = cr
-  val hit-x = vx >= xx0 && vx < xx1 && cy >= xy0 && cy < xy1
-  val hit-c = vx >= cx0 && vx < cx1 && cy >= cy0 && cy < cy1
-  if hit-x || hit-c then 1 else 0
+  val vs = get-spec(spec)
+  if !is-on-screen(vs, vx, vy) then 0
+  else
+    val sy = get-scroll-y(sr)
+    val xr = cached-x-rect(pc)
+    val cr = cached-close-rect(pc)
+    val cy = vy + sy
+    val (xx0, xy0, xx1, xy1) = xr
+    val (cx0, cy0, cx1, cy1) = cr
+    val hit-x = vx >= xx0 && vx < xx1 && cy >= xy0 && cy < xy1
+    val hit-c = vx >= cx0 && vx < cx1 && cy >= cy0 && cy < cy1
+    if hit-x || hit-c then 1 else 0
 
 // --- fallback test pattern (no GIF loaded) -----------------------------------
 
@@ -176,42 +223,40 @@ fun render-frame-pixels(f : decoded-frame, w : width, h : height) : vector<int>
 // before.
 
 pub fun frame-rgba(s : session, sc : scene-cell, fonts : font-registry, gc : glyph-cache,
-                   sr : scroll-cell, pc : page-cache,
-                   now : float64, w-px : int, h-px : int)
+                   sr : scroll-cell, pc : page-cache, spec : spec-cell,
+                   now : float64)
         : <pure, read<global>, write<global>> vector<int>
-  val w = Width(w-px)
-  val h = Height(h-px)
-  if show-gif(sc) then render-playing(s, now, w, h, w-px, h-px)
-  else render-idle(fonts, gc, sr, pc, now, w, h, w-px, h-px)
+  val vs = get-spec(spec)
+  val w = Width(vs.vp.width)
+  val h = Height(vs.vp.height)
+  if show-gif(sc) then render-playing(s, now, w, h, vs.vp.width, vs.vp.height)
+  else render-idle(fonts, gc, sr, pc, vs, now, w, h)
 
-// Idle screen = composed scrollable typography page with fixed
-// top + bottom chrome and the body content scrollable in between.
-// We cache the *composed page* (alpha + rgba content + chrome
-// buffers) and re-blit per frame at the current scroll-y. The
-// blit is a flat per-pixel vector lookup so it stays cheap at
-// 60Hz.
+// Idle screen = composed scrollable typography page. Cache key
+// includes the full viewport-spec so any platform-presentation
+// change (rotation, safe-area adjustment, accessory connect)
+// invalidates and recomposes. Per-frame work in the steady state
+// is a vector lookup per pixel.
 fun render-idle(fonts : font-registry, gc : glyph-cache,
                 sr : scroll-cell, pc : page-cache,
+                vs : viewport-spec,
                 now : float64,
-                w : width, h : height, w-px : int, h-px : int)
+                w : width, h : height)
         : <pure, read<global>, write<global>> vector<int>
   val nfonts = registry-names(fonts).length
-  // Look up or refresh the composed-page cache.
   val sp = match !pc
     Just(cp) ->
-      if cp.font-count == nfonts && cp.vw == w-px && cp.vh == h-px
+      if cp.font-count == nfonts && viewport-spec-eq(cp.spec, vs)
         then cp.page
         else
-          val fresh = compose-scrollable-page(fonts, gc, w-px, h-px)
-          pc := Just(Cached-page(nfonts, w-px, h-px, fresh))
+          val fresh = compose-scrollable-page(fonts, gc, vs)
+          pc := Just(Cached-page(nfonts, vs, fresh))
           fresh
     Nothing ->
-      val fresh = compose-scrollable-page(fonts, gc, w-px, h-px)
-      pc := Just(Cached-page(nfonts, w-px, h-px, fresh))
+      val fresh = compose-scrollable-page(fonts, gc, vs)
+      pc := Just(Cached-page(nfonts, vs, fresh))
       fresh
-  // Advance scroll physics for this frame. Whole viewport is the
-  // scrollable region — no sticky chrome.
-  scroll/tick(sr, now, sp.content-h, h-px)
+  scroll/tick(sr, now, sp.content-h, vs.vp.height)
   val sy = get-scroll-y(sr)
   render-idle-pixels(sp, sy, w, h)
 

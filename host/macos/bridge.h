@@ -34,8 +34,22 @@ void        openbirds_free(const char* s);
 // All decisions about what to draw — animation timing, GIF frame
 // selection, palette compositing — live inside Koka. Swift just
 // keeps calling this and showing the bytes.
+//
+// `safe_*` are the per-edge safe-area insets in framebuffer pixels
+// (UIKit / SwiftUI exposes these on every view; convert from
+// logical points by multiplying by your pixel scale). The first-
+// class `viewport-spec` in `koka/viewport.kk` consumes them.
+//
+// `corner_radius_px` is the physical screen's corner radius in
+// framebuffer pixels (UIScreen `_displayCornerRadius` * pixelScale
+// on iOS, 0 if unknown / not rounded). Layout code can ask Koka
+// "is this pixel inside the rounded screen silhouette" without
+// having to know the geometry.
 void openbirds_render_frame(double now_seconds,
                             int32_t width_px, int32_t height_px,
+                            int32_t safe_top, int32_t safe_leading,
+                            int32_t safe_trailing, int32_t safe_bottom,
+                            int32_t corner_radius_px,
                             uint8_t* out_buffer);
 
 // --- GIF loading (Stage 3c/Lucile) ----------------------------------------

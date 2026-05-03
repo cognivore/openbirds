@@ -16,6 +16,7 @@
 // MTLTexture. The Koka-facing FFI does not change.
 
 import SwiftUI
+import UIKit
 import CoreGraphics
 import CBridge
 
@@ -93,14 +94,36 @@ struct FramebufferView: View {
     // first `onChanged` of a gesture.
     @State private var isPanning: Bool = false
 
+    // Physical screen corner radius in framebuffer pixels. Apple
+    // doesn't expose this in a public API; `_displayCornerRadius`
+    // on UIScreen has been the de-facto way since iOS 11. Returns
+    // 0 if the key vanishes in a future release — layout
+    // gracefully degrades to "no rounding" rather than crashing.
+    private static let cornerRadiusPx: Int32 = {
+        let key = "_displayCornerRadius"
+        let raw = UIScreen.main.value(forKey: key) as? CGFloat ?? 0
+        return Int32(raw * Self.pixelScale)
+    }()
+
     var body: some View {
         GeometryReader { geo in
             let fbW = max(Int32(geo.size.width  * Self.pixelScale), 1)
             let fbH = max(Int32(geo.size.height * Self.pixelScale), 1)
+            // Per-edge safe-area insets in framebuffer pixels.
+            // SwiftUI's GeometryReader serves them in logical
+            // points; multiply by pixelScale to land in
+            // framebuffer space.
+            let safeTop      = Int32(geo.safeAreaInsets.top      * Self.pixelScale)
+            let safeLeading  = Int32(geo.safeAreaInsets.leading  * Self.pixelScale)
+            let safeTrailing = Int32(geo.safeAreaInsets.trailing * Self.pixelScale)
+            let safeBottom   = Int32(geo.safeAreaInsets.bottom   * Self.pixelScale)
             ZStack {
                 TimelineView(.animation) { _ in
                     let now = CFAbsoluteTimeGetCurrent() - Self.startTime
-                    if let img = renderFrame(now: now, w: fbW, h: fbH) {
+                    if let img = renderFrame(now: now, w: fbW, h: fbH,
+                                             safeTop: safeTop, safeLeading: safeLeading,
+                                             safeTrailing: safeTrailing, safeBottom: safeBottom,
+                                             cornerRadius: Self.cornerRadiusPx) {
                         Image(decorative: img, scale: 1.0, orientation: .up)
                             .resizable()
                             .interpolation(.none)
@@ -186,11 +209,17 @@ struct FramebufferView: View {
         return false
     }
 
-    private func renderFrame(now: TimeInterval, w: Int32, h: Int32) -> CGImage? {
+    private func renderFrame(now: TimeInterval, w: Int32, h: Int32,
+                             safeTop: Int32, safeLeading: Int32,
+                             safeTrailing: Int32, safeBottom: Int32,
+                             cornerRadius: Int32) -> CGImage? {
         let byteCount = Int(w) * Int(h) * 4
         var buf = [UInt8](repeating: 0, count: byteCount)
         buf.withUnsafeMutableBufferPointer { ptr in
-            openbirds_render_frame(now, w, h, ptr.baseAddress!)
+            openbirds_render_frame(now, w, h,
+                                   safeTop, safeLeading, safeTrailing, safeBottom,
+                                   cornerRadius,
+                                   ptr.baseAddress!)
         }
         guard let provider = CGDataProvider(data: Data(buf) as CFData) else {
             return nil
