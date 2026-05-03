@@ -38,6 +38,7 @@
 
 module truetype/outline
 
+import std/num/float64
 import truetype/be_bytes
 import truetype/font
 
@@ -338,11 +339,12 @@ pub fun get-glyph-shape(info : font-info, glyph-index : int) : <div,exn> list<ve
     val num-contours    = i16(data, g)
     if num-contours == 0 then []
     elif num-contours < 0 then
-      // Compound glyph: not yet supported. Returning empty silently
-      // is the right call here — the surrounding layout still
-      // renders every other glyph; only this one shows as blank.
-      // Throwing would abandon the whole text run.
-      []
+      // Compound glyph: walk the components, recursively extract
+      // each sub-glyph's vertex list, transform by the per-component
+      // 2×3 affine, concatenate. Required for many fonts whose 'i',
+      // 'í', 'ï', etc. are composed of a stem glyph + a dot glyph
+      // bolted together with a translation. EB Garamond does this.
+      compound-glyph-shape(info, g + 10)
     else
       // Load the per-contour endpoint indices.
       val end-pts-off  = g + 10
@@ -359,6 +361,119 @@ pub fun get-glyph-shape(info : font-info, glyph-index : int) : <div,exn> list<ve
       // Final pass: build the vertex sequence.
       val rev = build-vertices-loop(end-pts, flags, xs, ys, initial-walk, [])
       rev.reverse
+
+// --- compound-glyph decoder ------------------------------------------------
+//
+// Direct port of `stbtt__GetGlyphShapeTT`'s `numberOfContours < 0`
+// branch (stb_truetype.h v1.26 lines 1812-1888). A compound glyph
+// is a sequence of "components" — each component points at another
+// glyph index plus an affine transform; the resulting shape is the
+// concatenation of every sub-glyph's vertex list, transformed.
+//
+// Component-record layout, walked from `comp-off` until the
+// MORE_COMPONENTS flag clears:
+//
+//     uint16 flags
+//     uint16 glyphIndex
+//     int{8|16} arg1, arg2     (XY translation, byte-or-short per ARG_1_AND_2_ARE_WORDS)
+//     scale info, see below.
+//
+// Flag bits we care about:
+//   0x0001 ARG_1_AND_2_ARE_WORDS    (else they're bytes)
+//   0x0002 ARGS_ARE_XY_VALUES       (must be set; matching-point not supported)
+//   0x0008 WE_HAVE_A_SCALE          (one int16/16384, applies to both axes)
+//   0x0020 MORE_COMPONENTS          (continue parsing after this record)
+//   0x0040 WE_HAVE_AN_X_AND_YSCALE  (two int16/16384, separate per axis)
+//   0x0080 WE_HAVE_A_TWO_BY_TWO     (four int16/16384, full 2×2 matrix)
+//
+// One `component` record = one (sub-glyph, affine) pair. We collect
+// the list, then `flatmap` over them to get the final vertex list.
+// Bundled into a `pub struct` (heap) for the same reason
+// everything else in this port is — Koka 3.2.2 codegen-bug
+// avoidance.
+
+pub struct component
+  glyph-index : int
+  // 2×3 affine: [m00 m10 tx; m01 m11 ty] applied as
+  //   x' = sqrt(m00² + m10²) · (m00·x + m10·y + tx)
+  //   y' = sqrt(m01² + m11²) · (m01·x + m11·y + ty)
+  // Layout matches stb's `mtx[6]`: m00=mtx[0], m01=mtx[1],
+  // m10=mtx[2], m11=mtx[3], tx=mtx[4], ty=mtx[5].
+  m00 : float64
+  m01 : float64
+  m10 : float64
+  m11 : float64
+  tx  : int
+  ty  : int
+
+// Flag bits (compound-glyph specific).
+val cflag-args-are-words : int = 0x0001
+val cflag-args-are-xy    : int = 0x0002
+val cflag-have-scale     : int = 0x0008
+val cflag-more-components: int = 0x0020
+val cflag-xy-scale       : int = 0x0040
+val cflag-two-by-two     : int = 0x0080
+
+fun parse-component-loop(data : bytes, off : int, acc : list<component>)
+        : <div,exn> list<component>
+  val flags = u16(data, off)
+  val gidx  = u16(data, off + 2)
+  val (tx, ty, off2) =
+    if bit-set(flags, cflag-args-are-xy) then
+      if bit-set(flags, cflag-args-are-words) then
+        (i16(data, off + 4), i16(data, off + 6), off + 8)
+      else
+        (i8(data, off + 4), i8(data, off + 5), off + 6)
+    else
+      throw("truetype/outline: compound glyph uses matching-point ARGs (unsupported)")
+  val (m00, m01, m10, m11, off3) =
+    if bit-set(flags, cflag-have-scale) then
+      val s = i16(data, off2).float64 / 16384.0
+      (s, 0.0, 0.0, s, off2 + 2)
+    elif bit-set(flags, cflag-xy-scale) then
+      val sx = i16(data, off2).float64 / 16384.0
+      val sy = i16(data, off2 + 2).float64 / 16384.0
+      (sx, 0.0, 0.0, sy, off2 + 4)
+    elif bit-set(flags, cflag-two-by-two) then
+      val a = i16(data, off2).float64 / 16384.0
+      val b = i16(data, off2 + 2).float64 / 16384.0
+      val c = i16(data, off2 + 4).float64 / 16384.0
+      val d = i16(data, off2 + 6).float64 / 16384.0
+      (a, b, c, d, off2 + 8)
+    else
+      (1.0, 0.0, 0.0, 1.0, off2)
+  val comp = Component(gidx, m00, m01, m10, m11, tx, ty)
+  if bit-set(flags, cflag-more-components) then
+    parse-component-loop(data, off3, Cons(comp, acc))
+  else
+    Cons(comp, acc).reverse
+
+// Apply one component's transform to one vertex. The `m` and `n`
+// scalars are pre-computed by the caller (per-component, not
+// per-vertex) — they're just `sqrt` of the column norms of the 2×2
+// matrix part, used to scale the translation independently along
+// each axis. Stb does the same.
+fun transform-vertex(v : vertex, c : component, m : float64, n : float64) : vertex
+  fun tx-x(x : int, y : int) : int
+    (m * (c.m00 * x.float64 + c.m10 * y.float64 + c.tx.float64)).floor.int
+  fun tx-y(x : int, y : int) : int
+    (n * (c.m01 * x.float64 + c.m11 * y.float64 + c.ty.float64)).floor.int
+  Vertex(v.vtype,
+         tx-x(v.x, v.y),  tx-y(v.x, v.y),
+         tx-x(v.cx, v.cy), tx-y(v.cx, v.cy))
+
+// Recursive sub-glyph extraction with transform. Calls back into
+// `get-glyph-shape` per component, so compound-of-compound
+// (uncommon but legal) just works via mutual recursion.
+fun apply-component(info : font-info, c : component) : <div,exn> list<vertex>
+  val sub-verts = get-glyph-shape(info, c.glyph-index)
+  val m = sqrt(c.m00 * c.m00 + c.m10 * c.m10)
+  val n = sqrt(c.m01 * c.m01 + c.m11 * c.m11)
+  sub-verts.map(fn(v) transform-vertex(v, c, m, n))
+
+fun compound-glyph-shape(info : font-info, comp-off : int) : <div,exn> list<vertex>
+  val components = parse-component-loop(info.data, comp-off, [])
+  components.flatmap(fn(c) apply-component(info, c))
 
 // Get the outline for a Unicode codepoint. Convenience wrapper.
 pub fun get-codepoint-shape(info : font-info, codepoint : int) : <div,exn> list<vertex>
