@@ -50,7 +50,7 @@ targets:
         OTHER_LDFLAGS: "-lopenbirds"
         # Code signing for device. Simulator builds set
         # CODE_SIGNING_ALLOWED=NO via the Justfile to skip.
-        DEVELOPMENT_TEAM:      3MS6433L44
+        DEVELOPMENT_TEAM:      22GNLKBRMV
         CODE_SIGN_STYLE:       Automatic
         CODE_SIGN_IDENTITY:    "Apple Development"
         # Per-SDK overrides: don't sign simulator builds, do sign device.
@@ -101,7 +101,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: de.memorici.openbirdsUITests
         TEST_TARGET_NAME: openbirds
-        DEVELOPMENT_TEAM:      3MS6433L44
+        DEVELOPMENT_TEAM:      22GNLKBRMV
         "CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]": NO
         "CODE_SIGNING_ALLOWED[sdk=iphoneos*]":        YES
         TARGETED_DEVICE_FAMILY: "1"

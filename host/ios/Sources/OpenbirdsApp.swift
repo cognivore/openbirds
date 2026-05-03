@@ -105,18 +105,42 @@ struct FramebufferView: View {
         return Int32(raw * Self.pixelScale)
     }()
 
+    // True safe-area insets for the active UIWindow. We use
+    // `.ignoresSafeArea()` on the framebuffer (full-bleed render),
+    // which zeros out GeometryReader's `safeAreaInsets`. The actual
+    // platform values still live on the UIWindow / UIScene; we
+    // read them there each frame so Koka knows where the chrome is.
+    private static func currentWindowInsets() -> UIEdgeInsets {
+        let scenes = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+        for scene in scenes where scene.activationState == .foregroundActive {
+            if let win = scene.windows.first(where: { $0.isKeyWindow }) ?? scene.windows.first {
+                return win.safeAreaInsets
+            }
+        }
+        if let scene = scenes.first,
+           let win = scene.windows.first(where: { $0.isKeyWindow }) ?? scene.windows.first {
+            return win.safeAreaInsets
+        }
+        return .zero
+    }
+
     var body: some View {
         GeometryReader { geo in
             let fbW = max(Int32(geo.size.width  * Self.pixelScale), 1)
             let fbH = max(Int32(geo.size.height * Self.pixelScale), 1)
-            // Per-edge safe-area insets in framebuffer pixels.
-            // SwiftUI's GeometryReader serves them in logical
-            // points; multiply by pixelScale to land in
-            // framebuffer space.
-            let safeTop      = Int32(geo.safeAreaInsets.top      * Self.pixelScale)
-            let safeLeading  = Int32(geo.safeAreaInsets.leading  * Self.pixelScale)
-            let safeTrailing = Int32(geo.safeAreaInsets.trailing * Self.pixelScale)
-            let safeBottom   = Int32(geo.safeAreaInsets.bottom   * Self.pixelScale)
+            // Per-edge safe-area insets in framebuffer pixels. The
+            // framebuffer view uses `.ignoresSafeArea()` so it
+            // renders full-bleed; that zeros out
+            // `geo.safeAreaInsets`. Read the *real* insets from the
+            // host UIWindow instead. UIEdgeInsets uses left/right
+            // (not leading/trailing) — for our LTR-only iOS shell
+            // they match.
+            let winInsets    = Self.currentWindowInsets()
+            let safeTop      = Int32(winInsets.top    * Self.pixelScale)
+            let safeLeading  = Int32(winInsets.left   * Self.pixelScale)
+            let safeTrailing = Int32(winInsets.right  * Self.pixelScale)
+            let safeBottom   = Int32(winInsets.bottom * Self.pixelScale)
             ZStack {
                 TimelineView(.animation) { _ in
                     let now = CFAbsoluteTimeGetCurrent() - Self.startTime

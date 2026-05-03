@@ -419,37 +419,37 @@ void openbirds_tap(int32_t x, int32_t y,
     if (x < 0 || y < 0) return;
     pthread_mutex_lock(&g_lock);
     kk_context_t* ctx = ensure_ctx();
-    kk_ref_t      sc  = borrow_scene(ctx);
-    kk_ref_t      sg  = borrow_session(ctx);
-    kk_ref_t      sr  = borrow_scroll(ctx);
-    kk_ref_t      pc  = borrow_pcache(ctx);
-    kk_ref_t      spec = borrow_spec(ctx);
-    // Compute the goodbye-animation deadline as `now + gif-duration`
-    // so scene.kk doesn't need to know about runtime.kk. If no GIF
-    // is loaded yet (e.g. tap landed during the load race) we fall
-    // back to a 3-second timeout so the user still gets out.
-    double dur = kk_runtime_gif_duration_s(sg, ctx);
+    // Koka calling convention: ref args are CONSUMED by default
+    // (no `^` borrow marker on these signatures). Each Koka call
+    // therefore needs its own `borrow_*` (which is `kk_ref_dup`
+    // under the hood). Reusing one ref across two calls would
+    // double-drop and crash on tap, which is exactly what was
+    // happening before this comment got written.
+    double dur = kk_runtime_gif_duration_s(borrow_session(ctx), ctx);
     if (dur <= 0.0) dur = 3.0;
     const double exit_at_s = now_seconds + dur;
-    kk_integer_t kx = kk_integer_from_int32(x, ctx);
-    kk_integer_t ky = kk_integer_from_int32(y, ctx);
-    // Diagnostic: read current scroll-y so we can correlate the
-    // viewport tap with the content-space hit-test in the log.
-    kk_ref_t      sr2 = borrow_scroll(ctx);
-    kk_integer_t  syk = kk_scroll_get_scroll_y(sr2, ctx);
-    int32_t       sy  = kk_integer_clamp32_borrow(syk, ctx);
-    // Diagnostic — ask Koka if the tap would hit a close rect.
-    // Filters off-screen taps via the rounded-rect check too.
-    kk_ref_t      pc2  = borrow_pcache(ctx);
-    kk_ref_t      spec2 = borrow_spec(ctx);
-    kk_integer_t  hk   = kk_render_would_close_tap(sr2, pc2, spec2,
-                            kk_integer_from_int32(x, ctx),
-                            kk_integer_from_int32(y, ctx), ctx);
-    int32_t       hit  = kk_integer_clamp32_borrow(hk, ctx);
+
+    // Diagnostic: read scroll-y for the log line.
+    kk_integer_t syk = kk_scroll_get_scroll_y(borrow_scroll(ctx), ctx);
+    int32_t      sy  = kk_integer_clamp32_borrow(syk, ctx);
+    kk_integer_drop(syk, ctx);
+
+    // Diagnostic: would the tap hit a close rect?
+    kk_integer_t hk = kk_render_would_close_tap(
+        borrow_scroll(ctx), borrow_pcache(ctx), borrow_spec(ctx),
+        kk_integer_from_int32(x, ctx),
+        kk_integer_from_int32(y, ctx), ctx);
+    int32_t hit = kk_integer_clamp32_borrow(hk, ctx);
+    kk_integer_drop(hk, ctx);
     os_log(OS_LOG_DEFAULT, "openbirds.bridge.tap viewport=(%d,%d) scroll-y=%d → content=(%d,%d) would-close=%d exit_at_s=%.3f",
            x, y, sy, x, y + sy, hit, exit_at_s);
-    kk_render_handle_tap_scrolled(sc, sr, pc, spec, kx, ky, exit_at_s, ctx);
-    os_log(OS_LOG_DEFAULT, "openbirds.bridge.tap returned");
+
+    // The actual dispatch: scroll-aware tap → scene transition.
+    kk_render_handle_tap_scrolled(
+        borrow_scene(ctx), borrow_scroll(ctx), borrow_pcache(ctx), borrow_spec(ctx),
+        kk_integer_from_int32(x, ctx),
+        kk_integer_from_int32(y, ctx),
+        exit_at_s, ctx);
     pthread_mutex_unlock(&g_lock);
 }
 

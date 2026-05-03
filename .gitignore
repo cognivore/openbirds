@@ -20,6 +20,8 @@ Package.resolved
 *.xcworkspace/
 DerivedData/
 host/ios/Info.plist
+# xcodegen leaves a *.bak when its sed/edit step rewrites in place.
+*.yml.bak
 
 # Bundled font binaries — fetched into Resources/fonts/ by `just
 # fetch-fonts` from upstream OFL sources (see docs/notes/typography.md).

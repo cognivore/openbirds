@@ -258,12 +258,32 @@ fun render-idle(fonts : font-registry, gc : glyph-cache,
       fresh
   scroll/tick(sr, now, sp.content-h, vs.vp.height)
   val sy = get-scroll-y(sr)
-  render-idle-pixels(sp, sy, w, h)
+  val bar = scroll-bar-info(sr, now, sp.content-h, vs)
+  render-idle-pixels(sp, sy, w, h, bar)
 
-fun render-idle-pixels(sp : scrollable-page, scroll-y : int, w : width, h : height) : vector<int>
+fun render-idle-pixels(sp : scrollable-page, scroll-y : int,
+                       w : width, h : height, bar : scroll-bar) : vector<int>
   val ch = h.pixels
   build-pixels(w, h) fn(x, y)
-    scrollable-pixel(sp, x.col, y.row, scroll-y, ch, 255)
+    val base = scrollable-pixel(sp, x.col, y.row, scroll-y, ch, 255)
+    if bar.visible
+       && x.col >= bar.x0 && x.col < bar.x1
+       && y.row >= bar.y0 && y.row < bar.y1
+      then over-white(base, bar.alpha)
+      else base
+
+// Alpha-over a white pixel onto an opaque RGBA-packed base. The base
+// stays alpha=255 (the framebuffer is opaque); we just lerp each
+// channel toward 255 by alpha/255. Integer math throughout.
+fun over-white(base : int, alpha : int) : int
+  val rr = (base / 16777216) % 256
+  val gg = (base / 65536)    % 256
+  val bb = (base / 256)      % 256
+  val inv = 255 - alpha
+  val r2  = (rr * inv + 255 * alpha) / 255
+  val g2  = (gg * inv + 255 * alpha) / 255
+  val b2  = (bb * inv + 255 * alpha) / 255
+  pack-rgba(r2, g2, b2, 255)
 
 fun render-playing(s : session, now : float64,
                    w : width, h : height, w-px : int, h-px : int)
