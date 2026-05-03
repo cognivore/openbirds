@@ -217,7 +217,12 @@ struct FramebufferView: View {
         let now = CFAbsoluteTimeGetCurrent() - Self.startTime
         let fy  = Double(value.location.y) * Double(fbH) / Double(container.height)
         if !isPanning {
-            openbirds_pan_start(fy, now)
+            // X is needed at touch-down so Koka can decide whether
+            // we're grabbing the scroll indicator (scrubber mode)
+            // or initiating a normal pan.
+            let fbW = max(Int32(container.width * Self.pixelScale), 1)
+            let fx  = Double(value.location.x) * Double(fbW) / Double(container.width)
+            openbirds_pan_start(fx, fy, now)
             isPanning = true
         } else {
             openbirds_pan_move(fy, now)

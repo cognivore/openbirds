@@ -70,53 +70,122 @@ pub struct scroll-state
   // pan call. Stale by at most one frame, which is fine.
   cached-max-y     : float64
   cached-dim       : float64
+  // Scrollbar scrubber mode: when the touch lands on/near the
+  // indicator, finger movement maps directly to bar position
+  // instead of running the normal 1:1 pan. `scrubber-scale`
+  // is `max-y / (track-h - bar-h)` captured at pan-start so
+  // pan-move only needs to multiply.
+  scrubber-active  : bool
+  scrubber-scale   : float64
 
 pub alias scroll-cell = ref<global, scroll-state>
 
 pub fun new-scroll-cell() : alloc<global> scroll-cell
-  ref(Scroll-state(0.0, 0.0, False, 0.0, 0.0, [], 0.0, 0.0, 0.0))
+  ref(Scroll-state(0.0, 0.0, False, 0.0, 0.0, [], 0.0, 0.0, 0.0, False, 0.0))
 
 pub fun get-scroll-y(c : scroll-cell) : <read<global>> int
   (!c).scroll-y.floor.int
 
 // --- pan handlers ---------------------------------------------------------
 
-// Finger down at viewport y `y`, monotonic time `t`. Resets
-// velocity AND the velocity window because the user is now in
-// direct control — any momentum from the previous fling stops
-// dead, just like UIScrollView.
-pub fun pan-start(c : scroll-cell, y : float64, t : float64) : <read<global>, write<global>> ()
+// Finger down at (viewport `x`, `y`) at monotonic time `t`. If the
+// touch lands within the scrollbar hit zone (right-edge band of
+// the safe area, vertically inside the indicator), enter scrubber
+// mode — subsequent pan-move events scale finger movement by the
+// content / track ratio, like long-pressing the iOS scroll
+// indicator. Otherwise it's a normal pan: any prior momentum stops
+// dead because the user is now in direct control.
+pub fun pan-start(c : scroll-cell, vs : viewport-spec,
+                  x : float64, y : float64, t : float64)
+        : <read<global>, write<global>, div> ()
   val s = !c
+  val (active, scale) = scrubber-hit-test(s, vs, x, y)
   c := Scroll-state(s.scroll-y, 0.0, True, y, t, [], t,
-                    s.cached-max-y, s.cached-dim)
+                    s.cached-max-y, s.cached-dim, active, scale)
 
-// Finger moves to viewport y `y` at time `t`. Updates scroll-y by
-// the inverse of the touch delta — applying the Holko rubber-band
-// formula whenever the new position would lie past an edge — and
-// pushes the (dy, dt) into the velocity window. We do NOT estimate
-// velocity here — that's computed from the window at pan-end so
-// wild last-frame spikes don't dominate the momentum.
+// Finger moves to viewport y `y` at time `t`. Two paths:
+//   - In scrubber mode: scale finger Δy by `scrubber-scale` and
+//     write straight into scroll-y, clamped to [0, max-y]. No
+//     rubber-band, no velocity samples — release should drop
+//     to zero velocity, like the iOS scrubber.
+//   - Otherwise: 1:1 finger-to-content delta, applying the Holko
+//     rubber-band formula whenever the new position would lie past
+//     an edge, and pushing the (dy, dt) into the velocity window.
+//     We do NOT estimate velocity here — that's computed from the
+//     window at pan-end so wild last-frame spikes don't dominate
+//     the momentum.
 pub fun pan-move(c : scroll-cell, y : float64, t : float64) : <read<global>, write<global>, div> ()
   val s = !c
   if !s.pan-active then ()
+  elif s.scrubber-active then
+    val finger-dy = y - s.last-pan-y     // positive when finger moves DOWN
+    val target    = s.scroll-y + finger-dy * s.scrubber-scale
+    val clamped   = if target < 0.0 then 0.0
+                    elif target > s.cached-max-y then s.cached-max-y
+                    else target
+    c := Scroll-state(clamped, 0.0, True, y, t, [], t,
+                      s.cached-max-y, s.cached-dim,
+                      True, s.scrubber-scale)
   else
     val dy = s.last-pan-y - y     // positive when finger moves up
     val dt = t - s.last-update-s
     val new-y     = apply-pan-delta(s.scroll-y, dy, s.cached-max-y, s.cached-dim)
     val new-window = push-vel-sample(s.vel-window, Vel-sample(dy, dt))
     c := Scroll-state(new-y, 0.0, True, y, t, new-window, t,
-                      s.cached-max-y, s.cached-dim)
+                      s.cached-max-y, s.cached-dim, False, 0.0)
 
-// Finger released at time `t`. Compute the release velocity as the
-// average of the last ~100 ms of finger movement — matches UIKit's
-// pan-recogniser semantics, so a quick flick produces hundreds of
-// px/s rather than thousands. (Velocity-from-touch-history idea
-// follows Aijaz Ansari's write-up linked at the top.)
+// Finger released at time `t`. Scrubber releases settle at zero
+// velocity (no momentum kick); normal pan releases compute the
+// release velocity as the average of the last ~100 ms of finger
+// movement — matches UIKit's pan-recogniser semantics, so a quick
+// flick produces hundreds of px/s rather than thousands.
+// (Velocity-from-touch-history idea follows Aijaz Ansari's
+// write-up linked at the top.)
 pub fun pan-end(c : scroll-cell, t : float64) : <read<global>, write<global>, div> ()
   val s  = !c
-  val vy = release-velocity(s.vel-window)
+  val vy = if s.scrubber-active then 0.0 else release-velocity(s.vel-window)
   c := Scroll-state(s.scroll-y, vy, False, s.last-pan-y, t, [], t,
-                    s.cached-max-y, s.cached-dim)
+                    s.cached-max-y, s.cached-dim, False, 0.0)
+
+// --- scrubber hit-test ----------------------------------------------------
+
+// Horizontal slop around the visible bar. The bar itself is
+// `bar-width-px + bar-right-inset-px` ≈ 6 px from the screen edge;
+// finger pads need a bigger target so we extend the hit zone
+// inward by ~24 px.
+val scrubber-x-slop-px : int = 24
+
+// Returns (scrubber-active, scrubber-scale). False / 0.0 if the
+// touch isn't on the indicator or the content fits in the
+// viewport (in which case there's no bar to grab).
+fun scrubber-hit-test(s : scroll-state, vs : viewport-spec,
+                      x : float64, y : float64) : (bool, float64)
+  if s.cached-max-y <= 0.0 then (False, 0.0)
+  else
+    val (_sx0, sy0, sx1, sy1) = safe-rect(vs)
+    val safe-h    = sy1 - sy0
+    val track-y0  = sy0 + bar-end-pad-px
+    val track-y1  = sy1 - bar-end-pad-px
+    val track-h   = track-y1 - track-y0
+    val content-h = (s.cached-max-y + s.cached-dim).floor.int
+    if track-h <= 0 || safe-h <= 0 || content-h <= safe-h then (False, 0.0)
+    else
+      val bar-h-raw = (track-h.float64 * safe-h.float64 / content-h.float64).floor.int
+      val bar-h     = if bar-h-raw < bar-min-h-px then bar-min-h-px else bar-h-raw
+      val bar-travel = track-h - bar-h
+      if bar-travel <= 0 then (False, 0.0)
+      else
+        val max-scroll-bar = (content-h - safe-h).float64
+        val frac-raw = if max-scroll-bar > 0.0 then s.scroll-y / max-scroll-bar else 0.0
+        val frac = if frac-raw < 0.0 then 0.0 elif frac-raw > 1.0 then 1.0 else frac-raw
+        val bar-y0 = track-y0.float64 + (bar-travel.float64 * frac)
+        val bar-y1 = bar-y0 + bar-h.float64
+        val hit-x-min = (sx1 - bar-width-px - bar-right-inset-px - scrubber-x-slop-px).float64
+        val hit-x-max = sx1.float64
+        if x >= hit-x-min && x <= hit-x-max && y >= bar-y0 && y <= bar-y1 then
+          (True, s.cached-max-y / bar-travel.float64)
+        else
+          (False, 0.0)
 
 // Velocity window: keep at most ~6 samples or 100 ms of total
 // elapsed time, whichever is shorter. Old samples drop out as new
@@ -192,7 +261,8 @@ pub fun tick(c : scroll-cell, t : float64,
     val moved = (new-y - s.scroll-y).abs > 0.5
     val activity-s = if moved || s.pan-active then t else s.last-activity-s
     c := Scroll-state(new-y, new-vy, s.pan-active, s.last-pan-y, t,
-                      s.vel-window, activity-s, max-y-clamped, dim)
+                      s.vel-window, activity-s, max-y-clamped, dim,
+                      s.scrubber-active, s.scrubber-scale)
 
 // --- scroll-bar indicator -------------------------------------------------
 //
@@ -209,6 +279,11 @@ val bar-right-inset-px : int = 3
 val bar-end-pad-px     : int = 4   // vertical pad inside the safe rect
 val bar-min-h-px       : int = 24
 val bar-max-alpha      : int = 180  // 0..255; iOS feels ~180 on a black bg
+// While the user is actively scrubbing, the indicator widens
+// inward and brightens — same convention as iOS, where grabbing
+// the scroll indicator promotes it to a thicker scrubber.
+val bar-width-scrubber-px : int = 7
+val bar-scrubber-alpha    : int = 235
 
 pub value struct scroll-bar
   visible : bool
@@ -234,8 +309,8 @@ pub fun scroll-bar-info(c : scroll-cell, now : float64,
   val safe-h   = sy1 - sy0
   if track-h <= 0 || safe-h <= 0 || content-h <= safe-h then invisible-bar
   else
-    val alpha = bar-alpha(s.pan-active, now - s.last-activity-s)
-    if alpha <= 0 then invisible-bar
+    val base-alpha = bar-alpha(s.pan-active, now - s.last-activity-s)
+    if base-alpha <= 0 then invisible-bar
     else
       val ch = content-h.float64
       val sh = safe-h.float64
@@ -246,8 +321,10 @@ pub fun scroll-bar-info(c : scroll-cell, now : float64,
       val frac = if frac-raw < 0.0 then 0.0 elif frac-raw > 1.0 then 1.0 else frac-raw
       val bar-y0 = track-y0 + ((track-h - bar-h).float64 * frac).floor.int
       val bar-y1 = bar-y0 + bar-h
+      val width = if s.scrubber-active then bar-width-scrubber-px else bar-width-px
+      val alpha = if s.scrubber-active then bar-scrubber-alpha else base-alpha
       val bar-x1 = sx1 - bar-right-inset-px
-      val bar-x0 = bar-x1 - bar-width-px
+      val bar-x0 = bar-x1 - width
       Scroll-bar(True, alpha, bar-x0, bar-y0, bar-x1, bar-y1)
 
 fun bar-alpha(pan-active : bool, since-activity : float64) : int

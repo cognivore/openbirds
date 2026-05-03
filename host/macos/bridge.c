@@ -88,7 +88,8 @@ extern kk_unit_t kk_truetype_registry_register(kk_ref_t r, kk_string_t name,
     kk_vector_t bytes, kk_context_t* _ctx);
 extern kk_ref_t kk_truetype_glyph__cache_new_glyph_cache(kk_context_t* _ctx);
 extern kk_ref_t kk_scroll_new_scroll_cell(kk_context_t* _ctx);
-extern kk_unit_t kk_scroll_pan_start(kk_ref_t c, double y, double t, kk_context_t* _ctx);
+extern kk_unit_t kk_render_handle_pan_start(kk_ref_t sr, kk_ref_t spec,
+    double x, double y, double t, kk_context_t* _ctx);
 extern kk_unit_t kk_scroll_pan_move(kk_ref_t c, double y, double t, kk_context_t* _ctx);
 extern kk_unit_t kk_scroll_pan_end(kk_ref_t c, double t, kk_context_t* _ctx);
 extern kk_ref_t kk_render_new_page_cache(kk_context_t* _ctx);
@@ -469,11 +470,14 @@ int32_t openbirds_should_exit(double now_seconds) {
 
 // --- pan / scroll handlers (Stage 5/scroll) --------------------------------
 
-void openbirds_pan_start(double y, double t) {
+void openbirds_pan_start(double x, double y, double t) {
     pthread_mutex_lock(&g_lock);
     kk_context_t* ctx = ensure_ctx();
-    kk_ref_t      sr  = borrow_scroll(ctx);
-    kk_scroll_pan_start(sr, y, t, ctx);
+    // Routed through render.handle-pan-start so the Koka side can
+    // hydrate the cached viewport-spec and run the scrollbar
+    // hit-test before deciding pan vs. scrubber.
+    kk_render_handle_pan_start(borrow_scroll(ctx), borrow_spec(ctx),
+                               x, y, t, ctx);
     pthread_mutex_unlock(&g_lock);
 }
 

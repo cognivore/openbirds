@@ -133,6 +133,15 @@ pub fun handle-tap-scrolled(s : scene-cell, sr : scroll-cell, pc : page-cache,
 // close rect? Used by `openbirds_tap` to log a pass/fail signal
 // without doing the rect math in C. 1 on hit, 0 on miss / off
 // screen.
+// Bridge-facing pan-start that hydrates the viewport-spec out of
+// the global cell so `scroll/pan-start` can run its scrollbar
+// hit-test without us having to ferry the whole spec across the
+// FFI boundary on every touch.
+pub fun handle-pan-start(sr : scroll-cell, spec : spec-cell,
+                         x : float64, y : float64, t : float64)
+        : <read<global>, write<global>, div> ()
+  scroll/pan-start(sr, get-spec(spec), x, y, t)
+
 pub fun would-close-tap(sr : scroll-cell, pc : page-cache, spec : spec-cell,
                         vx : int, vy : int) : <read<global>> int
   val vs = get-spec(spec)

@@ -102,7 +102,7 @@ int32_t openbirds_should_exit(double now_seconds);
 // the renderer uses (CFAbsoluteTimeGetCurrent minus app start).
 // The brain integrates these into a momentum-decaying scroll-y
 // that the renderer crops the composed page at.
-void openbirds_pan_start(double y, double t);
+void openbirds_pan_start(double x, double y, double t);
 void openbirds_pan_move (double y, double t);
 void openbirds_pan_end  (double t);
 
