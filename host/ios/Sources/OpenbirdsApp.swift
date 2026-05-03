@@ -61,41 +61,55 @@ struct FramebufferView: View {
 
     var body: some View {
         // GeometryReader lets us know the actual displayed size of
-        // the Image so taps can be mapped from view-pixel space back
-        // to framebuffer-pixel space (renderWidth × renderHeight).
+        // the Image so taps can be mapped from view-pixel space
+        // back to framebuffer-pixel space (renderWidth ×
+        // renderHeight).
+        //
+        // Tap-capture is a `Color.black.opacity(0.001)` overlay
+        // pinned to fill the entire geometry and stamped with
+        // `.contentShape`. A literal `Color.clear` collapses out
+        // of hit-testing in some SwiftUI layouts; a near-zero
+        // alpha keeps the view in the rendering tree without
+        // visibly altering the framebuffer.
         GeometryReader { geo in
-            TimelineView(.animation) { _ in
-                let now = CFAbsoluteTimeGetCurrent() - Self.startTime
-                if let img = renderFrame(now: now) {
-                    Image(decorative: img, scale: 1.0, orientation: .up)
-                        .resizable()
-                        .interpolation(.none)
-                        .aspectRatio(contentMode: .fit)
-                } else {
-                    Color.red
+            ZStack {
+                TimelineView(.animation) { _ in
+                    let now = CFAbsoluteTimeGetCurrent() - Self.startTime
+                    if let img = renderFrame(now: now) {
+                        Image(decorative: img, scale: 1.0, orientation: .up)
+                            .resizable()
+                            .interpolation(.none)
+                            .aspectRatio(contentMode: .fit)
+                    } else {
+                        Color.red
+                    }
+                    // Per-tick exit poll. Cheap — single mutex + a
+                    // ref read on the Koka side.
+                    let _ = pollExit()
                 }
-                // Per-tick exit poll. Cheap — single mutex + a ref read
-                // on the Koka side.
-                let _ = pollExit()
+                Color.black.opacity(0.001)
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .contentShape(Rectangle())
+                    .onTapGesture(coordinateSpace: .local) { location in
+                        handleTap(at: location, in: geo.size)
+                    }
             }
-            .contentShape(Rectangle())
-            .gesture(tapGesture(in: geo.size))
+            .frame(width: geo.size.width, height: geo.size.height)
         }
     }
 
-    // SpatialTapGesture gives us the tap location in the local
-    // coordinate space; we map it to the framebuffer's logical
-    // pixel coords (0..renderWidth, 0..renderHeight) accounting for
-    // aspect-fit letterboxing, then hand it to Koka.
-    private func tapGesture(in containerSize: CGSize) -> some Gesture {
-        SpatialTapGesture(coordinateSpace: .local)
-            .onEnded { value in
-                guard let mapped = mapToFramebuffer(point: value.location,
-                                                   container: containerSize) else { return }
-                let now = CFAbsoluteTimeGetCurrent() - Self.startTime
-                openbirds_tap(Int32(mapped.x), Int32(mapped.y),
-                              Self.renderWidth, Self.renderHeight, now)
-            }
+    private func handleTap(at point: CGPoint, in containerSize: CGSize) {
+        let now = CFAbsoluteTimeGetCurrent() - Self.startTime
+        guard let mapped = mapToFramebuffer(point: point, container: containerSize) else {
+            NSLog("openbirds.tap: out-of-bounds at (%.1f, %.1f) in %.0fx%.0f",
+                  point.x, point.y, containerSize.width, containerSize.height)
+            return
+        }
+        NSLog("openbirds.tap: container=(%.0f,%.0f) point=(%.1f,%.1f) → fb=(%d,%d) now=%.3f",
+              containerSize.width, containerSize.height,
+              point.x, point.y, mapped.x, mapped.y, now)
+        openbirds_tap(Int32(mapped.x), Int32(mapped.y),
+                      Self.renderWidth, Self.renderHeight, now)
     }
 
     // The Image is `.aspectRatio(.fit)` so it's centered with
