@@ -33,6 +33,7 @@ import std/num/float64
 import pixel
 import framebuffer
 import runtime
+import scene
 
 // --- fallback test pattern (no GIF loaded) -----------------------------------
 
@@ -78,13 +79,47 @@ fun gif-pixel-at(f : decoded-frame, x : pixel-x, y : pixel-y, w : width, h : hei
     Just(pi) -> palette-packed(f, pi)
     Nothing  -> 255
 
+// --- close-button overlay ---------------------------------------------------
+//
+// A dark bar across the bottom 15% of the screen with a centered
+// X glyph. The geometry comes from `scene/button-rect` so input
+// hit-testing and rendering agree on where the button is.
+
+val button-bg : int    = 184549375    // 0x0AFF — packed (10,10,10,255)
+val button-fg : int    = 4294967295   // 0xFFFFFFFF — packed (255,255,255,255)
+val stroke-half : int  = 1            // ~3px thick X stroke
+
+// Pack the button's background colour explicitly (literal above is
+// just a sanity check; this is what we actually use).
+val button-bg-rgba : int = pack-rgba(20, 20, 20, 255)
+val button-fg-rgba : int = pack-rgba(255, 255, 255, 255)
+
+fun in-button(x : int, y : int, w : int, h : int) : bool
+  val (bx0, by0, bx1, by1) = button-rect(w, h)
+  x >= bx0 && x <= bx1 && y >= by0 && y <= by1
+
+fun button-pixel(x : int, y : int, w : int, h : int) : int
+  val (bx0, by0, bx1, by1) = button-rect(w, h)
+  val cx  = (bx0 + bx1) / 2
+  val cy  = (by0 + by1) / 2
+  val arm = (by1 - by0) / 3
+  val dx  = x - cx
+  val dy  = y - cy
+  if dx.abs > arm || dy.abs > arm then button-bg-rgba
+  elif (dx + dy).abs <= stroke-half || (dx - dy).abs <= stroke-half
+    then button-fg-rgba
+  else button-bg-rgba
+
 // Per-pixel render of one decoded frame at the given output size.
-// Allocates the output `vector<int>` once and fills it via
-// `vector-init-total` (which dispatches to kklib's
-// `kk_vector_init_total` — a single alloc + tight C loop).
+// Composites the close-button overlay on top of the GIF.
+// `vector-init-total` dispatches to kklib's `kk_vector_init_total`
+// (single alloc + tight C-side loop).
 fun render-frame-pixels(f : decoded-frame, w : width, h : height) : vector<int>
+  val cw = w.pixels
+  val ch = h.pixels
   build-pixels(w, h) fn(x, y)
-    gif-pixel-at(f, x, y, w, h)
+    if in-button(x.col, y.row, cw, ch) then button-pixel(x.col, y.row, cw, ch)
+    else gif-pixel-at(f, x, y, w, h)
 
 // --- entry point ------------------------------------------------------------
 
@@ -108,5 +143,8 @@ pub fun frame-rgba(s : session, now : float64, w-px : int, h-px : int)
     Nothing -> render-fallback(now, w, h)
 
 fun render-fallback(now : float64, w : width, h : height) : vector<int>
+  val cw = w.pixels
+  val ch = h.pixels
   build-pixels(w, h) fn(x, y)
-    checkerboard-at(now, x, y)
+    if in-button(x.col, y.row, cw, ch) then button-pixel(x.col, y.row, cw, ch)
+    else checkerboard-at(now, x, y)

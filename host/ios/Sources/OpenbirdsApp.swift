@@ -1,16 +1,18 @@
 // openbirds iOS shell — thin servant. mcmonad-style: this file owns
 // nothing except the SwiftUI window, the per-frame tick, the
-// pixel-buffer-to-CGImage marshalling, and the one-time GIF asset
-// load on launch. Every decision about *what* to draw is in Koka.
+// pixel-buffer-to-CGImage marshalling, the bundled-asset load on
+// launch, and the input/exit plumbing. Every decision about *what*
+// to draw, what touches mean, and when to exit is in Koka.
 //
 // Per-frame loop: TimelineView ticks at the display refresh; we ask
 // Koka for the RGBA bytes for the current absolute time, wrap them
 // in a CGImage, hand it to a SwiftUI Image with `.interpolation(.none)`
-// for crisp pixel-art scaling.
+// for crisp pixel-art scaling. Each tick we also poll
+// `openbirds_should_exit()` — once the brain says "exit", we call
+// `exit(0)`.
 //
 // Stage 4+ swaps the CGImage path for a MetalKit view backed by an
-// MTLTexture. The Koka-facing FFI (openbirds_render_frame) does not
-// change.
+// MTLTexture. The Koka-facing FFI does not change.
 
 import SwiftUI
 import CoreGraphics
@@ -58,17 +60,72 @@ struct FramebufferView: View {
     private static let startTime = CFAbsoluteTimeGetCurrent()
 
     var body: some View {
-        TimelineView(.animation) { _ in
-            let now = CFAbsoluteTimeGetCurrent() - Self.startTime
-            if let img = renderFrame(now: now) {
-                Image(decorative: img, scale: 1.0, orientation: .up)
-                    .resizable()
-                    .interpolation(.none)
-                    .aspectRatio(contentMode: .fit)
-            } else {
-                Color.red
+        // GeometryReader lets us know the actual displayed size of
+        // the Image so taps can be mapped from view-pixel space back
+        // to framebuffer-pixel space (renderWidth × renderHeight).
+        GeometryReader { geo in
+            TimelineView(.animation) { _ in
+                let now = CFAbsoluteTimeGetCurrent() - Self.startTime
+                if let img = renderFrame(now: now) {
+                    Image(decorative: img, scale: 1.0, orientation: .up)
+                        .resizable()
+                        .interpolation(.none)
+                        .aspectRatio(contentMode: .fit)
+                } else {
+                    Color.red
+                }
+                // Per-tick exit poll. Cheap — single mutex + a ref read
+                // on the Koka side.
+                let _ = pollExit()
             }
+            .contentShape(Rectangle())
+            .gesture(tapGesture(in: geo.size))
         }
+    }
+
+    // SpatialTapGesture gives us the tap location in the local
+    // coordinate space; we map it to the framebuffer's logical
+    // pixel coords (0..renderWidth, 0..renderHeight) accounting for
+    // aspect-fit letterboxing, then hand it to Koka.
+    private func tapGesture(in containerSize: CGSize) -> some Gesture {
+        SpatialTapGesture(coordinateSpace: .local)
+            .onEnded { value in
+                guard let mapped = mapToFramebuffer(point: value.location,
+                                                   container: containerSize) else { return }
+                openbirds_tap(Int32(mapped.x), Int32(mapped.y),
+                              Self.renderWidth, Self.renderHeight)
+            }
+    }
+
+    // The Image is `.aspectRatio(.fit)` so it's centered with
+    // letterboxing if the container's aspect doesn't match the
+    // framebuffer's. Reverse the transform here.
+    private func mapToFramebuffer(point: CGPoint, container: CGSize) -> (x: Int, y: Int)? {
+        let fbW = CGFloat(Self.renderWidth)
+        let fbH = CGFloat(Self.renderHeight)
+        let scale  = min(container.width / fbW, container.height / fbH)
+        let drawnW = fbW * scale
+        let drawnH = fbH * scale
+        let originX = (container.width  - drawnW) / 2
+        let originY = (container.height - drawnH) / 2
+        let lx = point.x - originX
+        let ly = point.y - originY
+        if lx < 0 || ly < 0 || lx >= drawnW || ly >= drawnH { return nil }
+        let fx = Int(lx / scale)
+        let fy = Int(ly / scale)
+        return (fx, fy)
+    }
+
+    // Each frame, ask Koka if it wants the app to exit. Once it
+    // says yes, we exit(0). iOS prefers user-driven termination,
+    // but openbirds is explicitly designed around a single
+    // user-tapped close button; the brain owning that decision is
+    // the whole point.
+    private func pollExit() -> Bool {
+        if openbirds_should_exit() != 0 {
+            exit(0)
+        }
+        return false
     }
 
     private func renderFrame(now: TimeInterval) -> CGImage? {

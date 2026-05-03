@@ -50,6 +50,19 @@ void openbirds_render_frame(double now_seconds,
 // if the caller needs to free it. `len` is the number of bytes.
 void openbirds_load_gif(const uint8_t* bytes, int32_t len);
 
+// --- input + lifecycle (Stage 4a/close-button) -----------------------------
+//
+// Tap input from Swift. (x, y) is in framebuffer-pixel coordinates
+// (the same coord system openbirds_render_frame writes to: 0,0 =
+// top-left, w-1,h-1 = bottom-right). The brain owns the hit-test
+// against UI widgets like the close button.
+void openbirds_tap(int32_t x, int32_t y, int32_t width_px, int32_t height_px);
+
+// Polled by the Swift host every frame. Returns 1 once the brain
+// has decided the app should exit (e.g. the user tapped the close
+// button); the host then calls `exit(0)`. Returns 0 otherwise.
+int32_t openbirds_should_exit(void);
+
 #ifdef __cplusplus
 }
 #endif
