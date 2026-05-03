@@ -22,7 +22,8 @@ import truetype/raster
 import truetype/metrics
 import truetype/cmap
 import truetype/names
-import typography_page
+import window/article
+import window/article/typography_demo
 
 extern import
   c file "test_smoke_io.c"

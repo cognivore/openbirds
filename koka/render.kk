@@ -39,7 +39,8 @@ import font
 import text
 import truetype/registry
 import truetype/glyph_cache
-import typography_page
+import window/article
+import window/article/typography_demo
 import viewport
 
 // --- scrollable-page cache (process-lifetime ref) -------------------------
