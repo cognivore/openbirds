@@ -34,7 +34,15 @@ import ttf/tables
 import ttf/types
 
 // One glyph point in font units, with its on/off-curve flag.
-pub value struct point
+//
+// Deliberately `pub struct` (heap-allocated), NOT `pub value struct`.
+// See the long note in `koka/ttf/raster.kk` near `flatten-ctx` for
+// the full reasoning — short version: anything that gets captured
+// in an effectful continuation closure must be a regular type, not
+// a value type with mixed raw+regular fields, or Koka's C backend
+// hits an `internal error: Backend.C.genLambda has multiple value
+// type fields that each contain both raw types and regular types`.
+pub struct point
   x        : int
   y        : int
   on-curve : bool
@@ -42,7 +50,7 @@ pub value struct point
 // One contour = list of points. Quadratic Bezier curves are
 // implied by sequences of off-curve points: between two off-curve
 // points an on-curve point is implied at their midpoint.
-pub value struct contour
+pub struct contour
   points : list<point>
 
 // One glyph's outline.

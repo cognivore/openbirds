@@ -20,6 +20,39 @@
 // This module owns the algorithm; the only "imperative" bits are
 // the in-place writes through `vset` (the same fip extern the
 // LZW decoder uses to bypass `kk_vector_unsafe_assign`'s drop).
+//
+// =====================================================================
+// EFFECT ROW + PARAMETER COUNT — what we learned the hard way
+// =====================================================================
+//
+// Every recursive function in this module is annotated `: div`, never
+// `: <exn,div>`. The reason is a Koka 3.2.2 codegen bug we hit during
+// development: a self-recursive function with **13 or more raw `int`
+// parameters** in any effect row that requires monadic lifting (i.e.
+// not pure `total`) sends `koka --target=c` into a silent infinite
+// loop after the type-check pass. No error, no progress, killable
+// only with SIGKILL. Bisected to a 14-line repro at
+// `~/Logseq/pages/_soup/2026-05-03-koka-possible-compiler-bug-repro.md`.
+//
+// Workaround applied throughout this module:
+//
+//   1. **Keep recursive functions at ≤ 12 args.** `subdivide-loop`
+//      below carries 12 (3 point structs + 8 ints + 1 list) —
+//      bundling three int pairs into a `point` heap struct keeps it
+//      under the threshold. A heap struct counts as one slot
+//      regardless of internal field count; raw `int` parameters each
+//      count as one.
+//   2. **Drop `exn` from the inner-loop effect row.** Validate at
+//      parse boundaries (`ttf/binary` may have `<exn,div>`); the
+//      rasterizer is `: div`-only so it never throws and never has
+//      to lift through an `exn` continuation.
+//   3. **Use the `kk_vector_at_borrow` extern for point lookups**
+//      (`vget-pt` below) — returns `: total a`, no `exn` for
+//      out-of-bounds, so callers don't pick up `exn` either.
+//
+// Mirror these workarounds in any new module that uses recursion +
+// effects + many scalar parameters. If you genuinely need more than
+// 12 raw args in one recursive function, bundle some into a struct.
 
 module ttf/raster
 
@@ -72,14 +105,14 @@ value struct seg
 // --- top-level rasterize ---------------------------------------------------
 
 pub fun rasterize(g : glyph-data, units-per-em : int, pixel-size : int)
-        : <exn,div> glyph-bitmap
+        : div glyph-bitmap
   if pixel-size <= 0 || units-per-em <= 0 then empty-bitmap
   else match g
     Empty -> empty-bitmap
     Simple(sg) -> rasterize-simple(sg, units-per-em, pixel-size)
 
 fun rasterize-simple(g : simple-glyph, upem : int, px : int)
-        : <exn,div> glyph-bitmap
+        : div glyph-bitmap
   val (xmin, ymin, xmax, ymax) = g.bbox
   // Scale: font-unit → pixel = fu * px / upem. We work in 4× ss.
   val ss = 4
@@ -124,11 +157,11 @@ fun rasterize-simple(g : simple-glyph, upem : int, px : int)
 val curve-segments : int = 8
 
 fun flatten-contours(cs : list<contour>, upem : int, ss-px : int,
-                     ox : int, oy : int) : <exn,div> list<seg>
+                     ox : int, oy : int) : div list<seg>
   cs.flatmap(fn(c) flatten-contour(c, upem, ss-px, ox, oy))
 
 fun flatten-contour(c : contour, upem : int, ss-px : int,
-                    ox : int, oy : int) : <exn,div> list<seg>
+                    ox : int, oy : int) : div list<seg>
   val pts = c.points.vector
   val n = pts.length
   if n < 2 then []
@@ -136,7 +169,7 @@ fun flatten-contour(c : contour, upem : int, ss-px : int,
 
 fun flatten-loop(pts : vector<point>, n : int, i : int,
                  upem : int, ss-px : int, ox : int, oy : int,
-                 acc : list<seg>) : <exn,div> list<seg>
+                 acc : list<seg>) : div list<seg>
   if i >= n then acc.reverse
   else
     val p0 = vget-pt(pts, i)
@@ -173,17 +206,18 @@ fun flatten-loop(pts : vector<point>, n : int, i : int,
       flatten-loop(pts, n, i + (if p2-raw.on-curve then 2 else 1),
                    upem, ss-px, ox, oy, curve-segs ++ acc)
 
-fun vget-pt(pts : vector<point>, i : int) : exn point
-  match pts.at(i)
-    Just(p) -> p
-    Nothing -> throw("ttf/raster: point index " ++ i.show ++ " out of range")
+inline fip extern @vec-pt-raw( ^v : vector<a>, ^index : ssize_t ) : total a
+  c "kk_vector_at_borrow"
+
+fip fun vget-pt( ^pts : vector<point>, i : int ) : point
+  @vec-pt-raw(pts, i.ssize_t)
 
 // Quadratic Bezier B(t) = (1-t)² P0 + 2(1-t)t P1 + t² P2,
 // subdivided into `n` line segments by sampling at t = i/n for
 // i = 0..n.
 fun subdivide-quadratic(p0 : point, p1 : point, p2 : point, n : int,
                         upem : int, ss-px : int, ox : int, oy : int)
-        : <exn,div> list<seg>
+        : div list<seg>
   subdivide-loop(p0, p1, p2, n, 1, upem, ss-px, ox, oy,
                  fu-to-ss(p0.x, upem, ss-px, ox),
                  fu-to-ss(p0.y, upem, ss-px, oy),
@@ -192,7 +226,7 @@ fun subdivide-quadratic(p0 : point, p1 : point, p2 : point, n : int,
 fun subdivide-loop(p0 : point, p1 : point, p2 : point, n : int, i : int,
                    upem : int, ss-px : int, ox : int, oy : int,
                    prev-x : int, prev-y : int,
-                   acc : list<seg>) : <exn,div> list<seg>
+                   acc : list<seg>) : div list<seg>
   if i > n then acc.reverse
   else
     val t-num = i
@@ -244,11 +278,11 @@ fun fu-to-ss(fu : int, upem : int, ss-px : int, origin-px : int) : int
 //   Average the ss rows into the output row's alpha values.
 
 fun fill-rows(alpha : vector<int>, segs : list<seg>, w : int, h : int, ss : int)
-        : <exn,div> ()
+        : div ()
   fill-rows-loop(alpha, segs, w, h, ss, 0)
 
 fun fill-rows-loop(alpha : vector<int>, segs : list<seg>,
-                   w : int, h : int, ss : int, y : int) : <exn,div> ()
+                   w : int, h : int, ss : int, y : int) : div ()
   if y >= h then ()
   else
     fill-one-row(alpha, segs, w, ss, y)
@@ -256,21 +290,21 @@ fun fill-rows-loop(alpha : vector<int>, segs : list<seg>,
 
 // Render one output row by averaging ss supersampled rows.
 fun fill-one-row(alpha : vector<int>, segs : list<seg>,
-                 w : int, ss : int, y : int) : <exn,div> ()
+                 w : int, ss : int, y : int) : div ()
   // Initialise this row's pixels to 0.
   init-row(alpha, w, y, 0)
   // Add coverage for each ss row.
   add-ss-rows(alpha, segs, w, ss, y, 0)
   // No need to divide; we accumulated 0..ss * 255 / ss = 0..255.
 
-fun init-row(alpha : vector<int>, w : int, y : int, x : int) : ()
+fun init-row(alpha : vector<int>, w : int, y : int, x : int) : div ()
   if x >= w then ()
   else
     vset(alpha, y * w + x, 0)
     init-row(alpha, w, y, x + 1)
 
 fun add-ss-rows(alpha : vector<int>, segs : list<seg>,
-                w : int, ss : int, y : int, sy-i : int) : <exn,div> ()
+                w : int, ss : int, y : int, sy-i : int) : div ()
   if sy-i >= ss then ()
   else
     val ss-row-y = y * ss + sy-i
@@ -283,7 +317,7 @@ fun add-ss-rows(alpha : vector<int>, segs : list<seg>,
 // horizontal line at supersampled-y `ssy` (in 4× units). A
 // segment from (x0, y0) to (x1, y1) crosses ssy iff the line
 // straddles ssy.
-fun scan-intersections(segs : list<seg>, ssy : int, acc : list<int>) : <exn,div> list<int>
+fun scan-intersections(segs : list<seg>, ssy : int, acc : list<int>) : div list<int>
   match segs
     Nil -> acc
     Cons(s, rest) ->
@@ -297,7 +331,7 @@ fun scan-intersections(segs : list<seg>, ssy : int, acc : list<int>) : <exn,div>
                  else s.x0 + ((ssy - s.y0) * dx) / dy
         scan-intersections(rest, ssy, Cons(xi, acc))
 
-fun sort-asc(xs : list<int>) : list<int>
+fun sort-asc(xs : list<int>) : div list<int>
   xs.qsort
 
 fun qsort(xs : list<int>) : div list<int>
@@ -311,7 +345,7 @@ fun qsort(xs : list<int>) : div list<int>
 // Pair-fill: for each (x0, x1) pair of sorted X-intersections,
 // add a per-output-pixel alpha contribution.
 fun fill-spans(alpha : vector<int>, xs : list<int>,
-               w : int, y : int, ss : int) : <exn,div> ()
+               w : int, y : int, ss : int) : div ()
   match xs
     Cons(x0, Cons(x1, rest)) ->
       // Convert ss-x → output px, clip to [0, w).
@@ -326,7 +360,7 @@ fun fill-spans(alpha : vector<int>, xs : list<int>,
     _ -> ()
 
 fun add-span(alpha : vector<int>, w : int, y : int,
-             x0 : int, x1 : int, contrib : int) : <exn,div> ()
+             x0 : int, x1 : int, contrib : int) : div ()
   if x0 >= x1 then ()
   else
     val ix = y * w + x0

@@ -14,9 +14,19 @@ module text
 
 import font
 
-// One bound text-render configuration. Captured once per call site
-// so the per-pixel callback can be allocation-free.
-pub value struct text-render
+// One bound text-render configuration. **Heap struct**, not
+// value: `bitmap-font` (regular reference) + `vector<int>`
+// (regular) + 5 raw ints is the mixed-content shape that Koka's
+// 3.2.2 C backend can't generate when the value gets captured by
+// an effectful continuation closure (`Backend.C.genLambda: ...
+// has multiple value type fields that each contain both raw
+// types and regular types`). Today's call site is the `: total`
+// `vector-init-total` closure inside `build-pixels`, so the bug
+// wouldn't bite — but heap-allocating pre-emptively keeps the
+// API safe for future effectful callers. See
+// `koka/ttf/raster.kk`'s header for the related parameter-count
+// hang we hit on the same compiler.
+pub struct text-render
   fnt        : bitmap-font
   codepoints : vector<int>
   origin-x   : int

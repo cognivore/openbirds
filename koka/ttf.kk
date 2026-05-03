@@ -29,6 +29,7 @@ import ttf/directory
 import ttf/types
 import ttf/tables
 import ttf/glyph
+import ttf/raster
 
 // One parsed font, ready for glyph extraction. `bytes` is kept
 // alongside the parsed-table indexes so the glyph parser can
