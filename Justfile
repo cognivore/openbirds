@@ -262,6 +262,29 @@ ios-run-device: ios-build-device
     echo ">>> launching de.memorici.openbirds"; \
     xcrun devicectl device process launch --device "$UDID" de.memorici.openbirds
 
+# --- truetype port: smoke test ---------------------------------------------
+
+# Build the smoke-test driver: a standalone binary that loads a TTF,
+# rasterises one codepoint at one size via the pure-Koka stb port,
+# and prints the result as ASCII art.
+build-truetype-smoke:
+    mkdir -p build
+    cd koka && koka -O2 --target=c \
+      --builddir=../build/.koka-truetype \
+      -o ../build/test-smoke \
+      truetype/test_smoke.kk
+    chmod +x build/test-smoke
+    @echo "built: ./build/test-smoke <ttf-path> [codepoint=97] [pixels=20]"
+
+# Run the smoke test against DejaVu Sans Bold (resolved from the Nix
+# store; bring it in via `nix-build -E 'with import <nixpkgs> {}; dejavu_fonts'`
+# if it isn't on disk yet). Default codepoint 97 ('a'), 20 px.
+test-truetype-smoke: build-truetype-smoke
+    DEJAVU=$(nix eval --impure --raw --expr 'with (import <nixpkgs> {}); dejavu_fonts.outPath'); \
+    FONT="$DEJAVU/share/fonts/truetype/DejaVuSans-Bold.ttf"; \
+    [ -f "$FONT" ] || { echo "missing: $FONT" >&2; exit 1; }; \
+    ./build/test-smoke "$FONT" 97 20
+
 # --- Hygiene ----------------------------------------------------------------
 
 clean:
