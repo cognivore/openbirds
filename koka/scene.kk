@@ -1,29 +1,34 @@
 // koka/scene.kk — UI scene state for openbirds.
 //
 // The brain owns "what's on screen" — including UI widgets and the
-// app's lifecycle decisions. Right now there's only one widget: a
-// close button along the bottom of the screen. Tapping it
-// transitions the scene to `Exit-Triggered`; the bridge polls
-// `is-exit-triggered` each frame and calls `exit(0)` when it sees
-// the flag flip.
+// app's lifecycle. The current scene is one of:
 //
-// Why a separate module: keeps the close-button logic out of the
-// renderer (which only asks "should I draw the button highlighted
-// or not?") and out of the GIF loader (which is purely about
-// pixel data).
+//   Idle              — close button visible, GIF looping
+//   Exiting(start)    — button hidden; GIF keeps playing as the
+//                       user's send-off; once `exit-delay-s`
+//                       seconds have elapsed since the tap, we
+//                       transition to Done
+//   Done              — bridge polls true on `should-exit`, Swift
+//                       calls `exit(0)`
+//
+// Why a separate module: keeps the close-button + lifecycle logic
+// out of the renderer (which only asks "is the button visible?")
+// and out of the GIF loader (which is purely about pixel data).
 
 module scene
 
-// What state the UI is in. As we grow this becomes a richer ADT
-// (Welcome | PlayingGif | Exiting | ...); for stage 4a there's
-// just one transition: Idle → Exit-Triggered.
+import std/num/float64
+
+// Total length of the "playing-out" animation after the user taps
+// close. Lucile is ~10 s end-to-end; we play her for half that as
+// the goodbye. Tweak for taste.
+val exit-delay-s : float64 = 3.0
+
 pub type scene-state
   Idle
-  Exit-Triggered
+  Exiting (start-s : float64)
+  Done
 
-// Process-lifetime mutable cell for the scene state. The bridge
-// allocates one in `ensure_scene` (lazy) and threads it through
-// every input + frame call.
 pub alias scene-cell = ref<global, scene-state>
 
 pub fun new-scene-cell() : alloc<global> scene-cell
@@ -41,14 +46,35 @@ pub fun button-rect(w : int, h : int) : (int, int, int, int)
   val by1 = h - 1
   (bx0, by0, bx1, by1)
 
-pub fun handle-tap(s : scene-cell, x : int, y : int, w : int, h : int)
+// Once the user taps inside the button, transition Idle → Exiting.
+// Subsequent taps (during the goodbye animation) are ignored.
+pub fun handle-tap(s : scene-cell, x : int, y : int, w : int, h : int, now : float64)
         : <read<global>, write<global>> ()
   val (bx0, by0, bx1, by1) = button-rect(w, h)
   if x >= bx0 && x <= bx1 && y >= by0 && y <= by1 then
-    s := Exit-Triggered
+    match !s
+      Idle -> s := Exiting(now)
+      _    -> ()
   else ()
 
-pub fun should-exit(s : scene-cell) : <read<global>> bool
+// Polled by the bridge every frame. Advances the state machine if
+// the goodbye-animation window has elapsed; returns whether the
+// app should exit *right now*.
+pub fun should-exit(s : scene-cell, now : float64)
+        : <read<global>, write<global>> bool
   match !s
-    Exit-Triggered -> True
-    Idle           -> False
+    Idle -> False
+    Exiting(start) ->
+      if now - start >= exit-delay-s then
+        s := Done
+        True
+      else False
+    Done -> True
+
+// Renderer asks this to decide whether to draw the close-button
+// overlay. Once the user has tapped, the button hides — they've
+// committed; this is just the goodbye animation.
+pub fun button-visible(s : scene-cell) : <read<global>> bool
+  match !s
+    Idle -> True
+    _    -> False

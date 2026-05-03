@@ -11,16 +11,22 @@
 #include "bridge.h"
 
 int main(void) {
-    printf("pre-tap should_exit: %d\n", openbirds_should_exit());
+    double t = 0.0;
+    printf("pre-tap should_exit: %d\n", openbirds_should_exit(t));
 
     // Tap somewhere away from the button (top-left corner).
-    openbirds_tap(10, 10, 256, 256);
-    printf("post-tap (off-button) should_exit: %d\n", openbirds_should_exit());
+    openbirds_tap(10, 10, 256, 256, t);
+    printf("post-tap (off-button) should_exit: %d\n", openbirds_should_exit(t));
 
     // Tap inside the button area (button is bottom 15% of the canvas
-    // — at 256x256, that's y >= 218; tap at center).
-    openbirds_tap(128, 230, 256, 256);
-    printf("post-tap (on-button) should_exit: %d\n", openbirds_should_exit());
+    // — at 256x256, that's y >= 218; tap at center). Should NOT
+    // exit yet — the brain plays the goodbye animation first.
+    openbirds_tap(128, 230, 256, 256, t);
+    printf("post-tap (on-button, t=0)    should_exit: %d\n", openbirds_should_exit(t));
+
+    // Same scene-cell but t advanced past exit-delay-s (3.0).
+    t = 4.0;
+    printf("post-tap (on-button, t=4.0)  should_exit: %d\n", openbirds_should_exit(t));
 
     return 0;
 }

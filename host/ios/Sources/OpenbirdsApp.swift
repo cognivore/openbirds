@@ -92,8 +92,9 @@ struct FramebufferView: View {
             .onEnded { value in
                 guard let mapped = mapToFramebuffer(point: value.location,
                                                    container: containerSize) else { return }
+                let now = CFAbsoluteTimeGetCurrent() - Self.startTime
                 openbirds_tap(Int32(mapped.x), Int32(mapped.y),
-                              Self.renderWidth, Self.renderHeight)
+                              Self.renderWidth, Self.renderHeight, now)
             }
     }
 
@@ -122,7 +123,8 @@ struct FramebufferView: View {
     // user-tapped close button; the brain owning that decision is
     // the whole point.
     private func pollExit() -> Bool {
-        if openbirds_should_exit() != 0 {
+        let now = CFAbsoluteTimeGetCurrent() - Self.startTime
+        if openbirds_should_exit(now) != 0 {
             exit(0)
         }
         return false

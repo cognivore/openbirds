@@ -54,14 +54,20 @@ void openbirds_load_gif(const uint8_t* bytes, int32_t len);
 //
 // Tap input from Swift. (x, y) is in framebuffer-pixel coordinates
 // (the same coord system openbirds_render_frame writes to: 0,0 =
-// top-left, w-1,h-1 = bottom-right). The brain owns the hit-test
-// against UI widgets like the close button.
-void openbirds_tap(int32_t x, int32_t y, int32_t width_px, int32_t height_px);
+// top-left, w-1,h-1 = bottom-right). `now_seconds` is the same
+// monotonic clock the renderer uses (CFAbsoluteTimeGetCurrent
+// minus the app start). The brain owns the hit-test against UI
+// widgets like the close button + the lifecycle clock.
+void openbirds_tap(int32_t x, int32_t y,
+                   int32_t width_px, int32_t height_px,
+                   double now_seconds);
 
 // Polled by the Swift host every frame. Returns 1 once the brain
-// has decided the app should exit (e.g. the user tapped the close
-// button); the host then calls `exit(0)`. Returns 0 otherwise.
-int32_t openbirds_should_exit(void);
+// has decided the app should exit; the host then calls `exit(0)`.
+// `now_seconds` lets the brain advance time-based scene transitions
+// (e.g. "play the GIF for 3 s after the user taps close, then
+// transition Done").
+int32_t openbirds_should_exit(double now_seconds);
 
 #ifdef __cplusplus
 }

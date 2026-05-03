@@ -111,40 +111,51 @@ fun button-pixel(x : int, y : int, w : int, h : int) : int
   else button-bg-rgba
 
 // Per-pixel render of one decoded frame at the given output size.
-// Composites the close-button overlay on top of the GIF.
+// Composites the close-button overlay on top of the GIF when
+// `show-button` is true (i.e. scene is Idle).
 // `vector-init-total` dispatches to kklib's `kk_vector_init_total`
 // (single alloc + tight C-side loop).
-fun render-frame-pixels(f : decoded-frame, w : width, h : height) : vector<int>
+fun render-frame-pixels(f : decoded-frame, w : width, h : height,
+                        show-button : bool) : vector<int>
   val cw = w.pixels
   val ch = h.pixels
   build-pixels(w, h) fn(x, y)
-    if in-button(x.col, y.row, cw, ch) then button-pixel(x.col, y.row, cw, ch)
-    else gif-pixel-at(f, x, y, w, h)
+    if show-button && in-button(x.col, y.row, cw, ch)
+      then button-pixel(x.col, y.row, cw, ch)
+      else gif-pixel-at(f, x, y, w, h)
 
 // --- entry point ------------------------------------------------------------
+//
+// Takes both the GIF session AND the scene-cell so the renderer
+// knows whether to draw the close-button overlay (visible while
+// Idle, hidden during the goodbye animation).
+//
+// The rendered-pixels cache key includes a "show-button" bool so
+// the cache invalidates exactly once when the user taps close.
 
-pub fun frame-rgba(s : session, now : float64, w-px : int, h-px : int)
+pub fun frame-rgba(s : session, sc : scene-cell, now : float64, w-px : int, h-px : int)
         : <pure, read<global>, write<global>> vector<int>
   val w = Width(w-px)
   val h = Height(h-px)
-  // Layer 1: rendered-pixels cache — same (frame-ix, w, h) as
-  // last call? Hand back the cached buffer untouched.
+  val show-button = button-visible(sc)
   match frame-ix-now(s, now)
-    Just(ix) -> match cached-pixels(s, ix, w-px, h-px)
-      Just(buf) -> buf
-      Nothing ->
-        // Layer 2 & 3: decode (if needed) + render + cache.
-        match current-frame(s, now)
-          Just(f) ->
-            val buf = render-frame-pixels(f, w, h)
-            store-pixels(s, ix, w-px, h-px, buf)
-            buf
-          Nothing -> render-fallback(now, w, h)
-    Nothing -> render-fallback(now, w, h)
+    Just(ix) ->
+      val key-ix = if show-button then ix else 0 - ix - 1
+      match cached-pixels(s, key-ix, w-px, h-px)
+        Just(buf) -> buf
+        Nothing ->
+          match current-frame(s, now)
+            Just(f) ->
+              val buf = render-frame-pixels(f, w, h, show-button)
+              store-pixels(s, key-ix, w-px, h-px, buf)
+              buf
+            Nothing -> render-fallback(now, w, h, show-button)
+    Nothing -> render-fallback(now, w, h, show-button)
 
-fun render-fallback(now : float64, w : width, h : height) : vector<int>
+fun render-fallback(now : float64, w : width, h : height, show-button : bool) : vector<int>
   val cw = w.pixels
   val ch = h.pixels
   build-pixels(w, h) fn(x, y)
-    if in-button(x.col, y.row, cw, ch) then button-pixel(x.col, y.row, cw, ch)
-    else checkerboard-at(now, x, y)
+    if show-button && in-button(x.col, y.row, cw, ch)
+      then button-pixel(x.col, y.row, cw, ch)
+      else checkerboard-at(now, x, y)

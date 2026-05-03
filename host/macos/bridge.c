@@ -71,8 +71,8 @@ extern void kk_koka_hello__main__done(kk_context_t* _ctx);
 extern kk_ref_t kk_scene_new_scene_cell(kk_context_t* _ctx);
 extern kk_unit_t kk_scene_handle_tap(kk_ref_t s,
     kk_integer_t x, kk_integer_t y, kk_integer_t w, kk_integer_t h,
-    kk_context_t* _ctx);
-extern bool kk_scene_should_exit(kk_ref_t s, kk_context_t* _ctx);
+    double now, kk_context_t* _ctx);
+extern bool kk_scene_should_exit(kk_ref_t s, double now, kk_context_t* _ctx);
 
 // --- session lifecycle ------------------------------------------------------
 
@@ -210,10 +210,11 @@ void openbirds_render_frame(double now_seconds,
 
     kk_context_t* ctx = ensure_ctx();
     kk_ref_t      s   = borrow_session(ctx);
+    kk_ref_t      sc  = borrow_scene(ctx);
 
     kk_integer_t w = kk_integer_from_int32(width_px, ctx);
     kk_integer_t h = kk_integer_from_int32(height_px, ctx);
-    kk_vector_t  v = kk_render_frame_rgba(s, now_seconds, w, h, ctx);
+    kk_vector_t  v = kk_render_frame_rgba(s, sc, now_seconds, w, h, ctx);
 
     kk_ssize_t len = 0;
     const kk_box_t* boxes = kk_vector_buf_borrow(v, &len, ctx);
@@ -267,7 +268,9 @@ void openbirds_render_frame(double now_seconds,
 
 // --- input + lifecycle (Stage 4a/close-button) ------------------------------
 
-void openbirds_tap(int32_t x, int32_t y, int32_t width_px, int32_t height_px) {
+void openbirds_tap(int32_t x, int32_t y,
+                   int32_t width_px, int32_t height_px,
+                   double now_seconds) {
     if (width_px <= 0 || height_px <= 0) return;
     pthread_mutex_lock(&g_lock);
     kk_context_t* ctx = ensure_ctx();
@@ -276,15 +279,15 @@ void openbirds_tap(int32_t x, int32_t y, int32_t width_px, int32_t height_px) {
     kk_integer_t ky = kk_integer_from_int32(y, ctx);
     kk_integer_t kw = kk_integer_from_int32(width_px, ctx);
     kk_integer_t kh = kk_integer_from_int32(height_px, ctx);
-    kk_scene_handle_tap(sc, kx, ky, kw, kh, ctx);
+    kk_scene_handle_tap(sc, kx, ky, kw, kh, now_seconds, ctx);
     pthread_mutex_unlock(&g_lock);
 }
 
-int32_t openbirds_should_exit(void) {
+int32_t openbirds_should_exit(double now_seconds) {
     pthread_mutex_lock(&g_lock);
     kk_context_t* ctx = ensure_ctx();
     kk_ref_t      sc  = borrow_scene(ctx);
-    bool          ex  = kk_scene_should_exit(sc, ctx);
+    bool          ex  = kk_scene_should_exit(sc, now_seconds, ctx);
     pthread_mutex_unlock(&g_lock);
     return ex ? 1 : 0;
 }
