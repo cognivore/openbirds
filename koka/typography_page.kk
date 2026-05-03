@@ -29,6 +29,20 @@ import truetype/raster
 import truetype/text
 import truetype/metrics
 
+// --- text wrapping helper --------------------------------------------------
+
+// Look up a font and wrap the string to `max-width` at the given
+// pixel size. Returns the wrapped lines, or a single fallback line
+// if the font isn't loaded yet (next compose-page will retry once
+// it arrives — see `idle-cache-key` in render.kk).
+fun wrap-with-font(reg : font-registry, font-name : string,
+                   text : string, size-px : int, max-width : int)
+        : <div, read<global>> list<string>
+  match lookup(reg, font-name)
+    Nothing -> [text]
+    Just(info) ->
+      error/try({ wrap-string(info, text, size-px.float64, max-width) }).default([text])
+
 // --- composed page: two flat buffers --------------------------------------
 
 pub struct rendered-page
@@ -116,7 +130,11 @@ struct run
 // tuned against an iPhone-17-Pro-class viewport (~956 logical px
 // tall). The whole composition occupies the top 85% of the
 // viewport; the bottom 15% is reserved for the CLOSE button bar.
-fun layout(w : int, h : int) : list<run>
+//
+// Long-form runs (body, code, pull quote) are wrapped to fit the
+// usable width by `wrap-with-font`, so they respect viewport-width
+// changes and don't need hand-broken source strings.
+fun layout(reg : font-registry, w : int, h : int) : <div, read<global>> list<run>
   // hpct(p) = p * h / 1000 — "p tenths of a percent of viewport
   // height". hpct(35) ≈ 33 logical px on a 956-tall screen, which
   // is a comfortable Garamond reading size.
@@ -139,32 +157,40 @@ fun layout(w : int, h : int) : list<run>
   val r-h1     = Run("Open self-care",  "Jost", hpct(74), left, head-y-a, ink-rgba)
   val r-h2     = Run("on your terms.",  "Jost", hpct(74), left, head-y-b, ink-rgba)
 
-  // Body block (EB Garamond): four broken lines.
+  // Usable text width: viewport minus left/right padding.
+  val text-w   = w - 2 * pad
+
+  // Body block (EB Garamond), word-wrapped to text-w.
   val body-y    = head-y-b + hpct(80)
   val body-step = hpct(40)
   val body-sz   = hpct(34)
-  val r-b1 = Run("There is no way a single",       "EBGaramond", body-sz, left, body-y + 0 * body-step, ink-rgba)
-  val r-b2 = Run("non-profit or commercial org",   "EBGaramond", body-sz, left, body-y + 1 * body-step, ink-rgba)
-  val r-b3 = Run("can sustain culturally",         "EBGaramond", body-sz, left, body-y + 2 * body-step, ink-rgba)
-  val r-b4 = Run("sensitive and sensible",         "EBGaramond", body-sz, left, body-y + 3 * body-step, ink-rgba)
+  val body-text = "There is no way a single non-profit or commercial org can sustain culturally sensitive and sensible"
+  val body-lines = wrap-with-font(reg, "EBGaramond", body-text, body-sz, text-w)
+  val body-runs = body-lines.map-indexed fn(i, line)
+    Run(line, "EBGaramond", body-sz, left, body-y + i * body-step, ink-rgba)
 
-  // Code snippet (Terminus): two indented lines.
-  val code-y    = body-y + 3 * body-step + hpct(54)
+  // Code snippet (Terminus), word-wrapped to a slightly narrower
+  // width because of the indent.
+  val code-y    = body-y + body-lines.length * body-step + hpct(54)
   val code-step = hpct(36)
   val code-sz   = hpct(28)
   val code-x    = left + hpct(28)
-  val r-c1 = Run("pub fun with-host(action: () ->",   "Terminus", code-sz, code-x, code-y + 0 * code-step, mono-rgba)
-  val r-c2 = Run("  e a) with handler ...",            "Terminus", code-sz, code-x, code-y + 1 * code-step, mono-rgba)
+  val code-text = "pub fun with-host(action: () -> e a) with handler ..."
+  val code-lines = wrap-with-font(reg, "Terminus", code-text, code-sz, text-w - hpct(28))
+  val code-runs = code-lines.map-indexed fn(i, line)
+    Run(line, "Terminus", code-sz, code-x, code-y + i * code-step, mono-rgba)
 
-  // Pull quote (Cormorant Garamond): two display lines.
-  val pull-y    = code-y + 1 * code-step + hpct(72)
+  // Pull quote (Cormorant Garamond), word-wrapped to text-w.
+  val pull-y    = code-y + code-lines.length * code-step + hpct(72)
   val pull-step = hpct(54)
   val pull-sz   = hpct(50)
-  val r-p1 = Run("content-rich self-care",         "CormorantGaramond", pull-sz, left, pull-y + 0 * pull-step, quote-rgba)
-  val r-p2 = Run("application.",                   "CormorantGaramond", pull-sz, left, pull-y + 1 * pull-step, quote-rgba)
+  val pull-text  = "content-rich self-care application."
+  val pull-lines = wrap-with-font(reg, "CormorantGaramond", pull-text, pull-sz, text-w)
+  val pull-runs = pull-lines.map-indexed fn(i, line)
+    Run(line, "CormorantGaramond", pull-sz, left, pull-y + i * pull-step, quote-rgba)
 
   // Closing body line.
-  val resume-y = pull-y + 1 * pull-step + hpct(58)
+  val resume-y = pull-y + pull-lines.length * pull-step + hpct(58)
   val r-r1 = Run("Thus, we are liberating it.",    "EBGaramond", body-sz, left, resume-y, ink-rgba)
 
   // CLOSE button label, centred in the bottom 15% of the viewport.
@@ -187,11 +213,11 @@ fun layout(w : int, h : int) : list<run>
                            close-x, close-y, ink-rgba)
 
   [ r-menu, r-main, r-close,
-    r-h1, r-h2,
-    r-b1, r-b2, r-b3, r-b4,
-    r-c1, r-c2,
-    r-p1, r-p2,
-    r-r1,
+    r-h1, r-h2 ] ++
+    body-runs ++
+    code-runs ++
+    pull-runs ++
+  [ r-r1,
     r-bottom-close ]
 
 // --- composition ---------------------------------------------------------
@@ -269,5 +295,5 @@ fun draw-runs(p : rendered-page, reg : font-registry, rs : list<run>)
 pub fun compose-page(reg : font-registry, w : int, h : int)
         : <div, read<global>> rendered-page
   val p = blank-page(w, h)
-  draw-runs(p, reg, layout(w, h))
+  draw-runs(p, reg, layout(reg, w, h))
   p

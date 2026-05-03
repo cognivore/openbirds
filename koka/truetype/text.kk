@@ -148,3 +148,55 @@ fun measure-loop(info : font-info, cps : list<int>, scale : float64, acc : int) 
       val (adv-fu, _) = get-glyph-h-metrics(info, gi)
       val adv-px = (adv-fu.float64 * scale + 0.5).floor.int
       measure-loop(info, rest, scale, acc + adv-px)
+
+// --- word wrapping ---------------------------------------------------------
+
+// Greedy word-wrap. Splits `s` on ASCII spaces, then packs words
+// onto lines until the next word would push past `max-width`
+// pixels. A single word exceeding max-width gets its own line and
+// overflows (we don't break inside words). Words are joined with a
+// single space — no preserving multiple spaces.
+pub fun wrap-string(info : font-info, s : string, size : float64, max-width : int)
+        : <div,exn> list<string>
+  val words = split-on-spaces(s.list, [], [])
+  if max-width <= 0 then [s]
+  else greedy-wrap(info, words, size, max-width, "", [])
+
+// Split a char list into a list of word strings on space boundaries.
+// Empty words are dropped. Last word goes in regardless.
+fun split-on-spaces(cs : list<char>, cur : list<char>, acc : list<string>) : div list<string>
+  match cs
+    Nil ->
+      if cur.is-nil then acc.reverse
+      else (Cons(cur.reverse.string, acc)).reverse
+    Cons(c, rest) ->
+      if c == ' ' then
+        if cur.is-nil then split-on-spaces(rest, [], acc)
+        else split-on-spaces(rest, [], Cons(cur.reverse.string, acc))
+      else
+        split-on-spaces(rest, Cons(c, cur), acc)
+
+// Lay words onto lines greedy-style.
+//   - If `cur-line` is empty, append this word.
+//   - Else if "cur-line + ' ' + word" still fits in max-width,
+//     append.
+//   - Else flush cur-line, start a new one with this word.
+fun greedy-wrap(info : font-info, words : list<string>, size : float64,
+                max-width : int, cur-line : string, acc : list<string>)
+        : <div,exn> list<string>
+  match words
+    Nil ->
+      if cur-line == "" then acc.reverse
+      else (Cons(cur-line, acc)).reverse
+    Cons(w, rest) ->
+      if cur-line == "" then
+        // First word on a new line — always take it.
+        greedy-wrap(info, rest, size, max-width, w, acc)
+      else
+        val candidate = cur-line ++ " " ++ w
+        val width = measure-string(info, candidate, size)
+        if width <= max-width then
+          greedy-wrap(info, rest, size, max-width, candidate, acc)
+        else
+          // Flush cur-line, start new with this word.
+          greedy-wrap(info, rest, size, max-width, w, Cons(cur-line, acc))
