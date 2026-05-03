@@ -59,6 +59,47 @@ pub alias page-cache = ref<global, maybe<cached-page>>
 pub fun new-page-cache() : alloc<global> page-cache
   ref(Nothing)
 
+// Bridge-facing accessors for the cached scrollable-page's hit
+// rects. Both return `(0,0,0,0)` if the cache is empty (= app
+// hasn't rendered yet); callers should treat the all-zero rect as
+// "no hit", which it naturally is since x >= 0 && x < 0 is false.
+pub fun cached-x-rect(pc : page-cache) : <read<global>> (int, int, int, int)
+  match !pc
+    Just(cp) -> cp.page.x-rect
+    Nothing  -> (0, 0, 0, 0)
+
+pub fun cached-close-rect(pc : page-cache) : <read<global>> (int, int, int, int)
+  match !pc
+    Just(cp) -> cp.page.close-rect
+    Nothing  -> (0, 0, 0, 0)
+
+// Tap dispatcher: viewport tap (x, vy) + current scroll-y →
+// handle-tap-on-rects with the cached close-rects in CONTENT
+// coords. Bridge calls this instead of `kk_scene_handle_tap`
+// directly so the rect lookup happens behind the FFI seam.
+pub fun handle-tap-scrolled(s : scene-cell, sr : scroll-cell, pc : page-cache,
+                            vx : int, vy : int, exit-at-s : float64)
+        : <read<global>, write<global>> ()
+  val sy = get-scroll-y(sr)
+  val xr = cached-x-rect(pc)
+  val cr = cached-close-rect(pc)
+  handle-tap-on-rects(s, vx, vy + sy, xr, cr, exit-at-s)
+
+// Bridge-facing diagnostic: did the most recent tap hit a close
+// rect? Used by `openbirds_tap` to log a clear pass/fail signal
+// without doing the rect math in C. Returns 1 on hit, 0 on miss.
+pub fun would-close-tap(sr : scroll-cell, pc : page-cache,
+                        vx : int, vy : int) : <read<global>> int
+  val sy = get-scroll-y(sr)
+  val xr = cached-x-rect(pc)
+  val cr = cached-close-rect(pc)
+  val cy = vy + sy
+  val (xx0, xy0, xx1, xy1) = xr
+  val (cx0, cy0, cx1, cy1) = cr
+  val hit-x = vx >= xx0 && vx < xx1 && cy >= xy0 && cy < xy1
+  val hit-c = vx >= cx0 && vx < cx1 && cy >= cy0 && cy < cy1
+  if hit-x || hit-c then 1 else 0
+
 // --- fallback test pattern (no GIF loaded) -----------------------------------
 
 val tile-px : int = 16
@@ -103,20 +144,12 @@ fun gif-pixel-at(f : decoded-frame, x : pixel-x, y : pixel-y, w : width, h : hei
     Just(pi) -> palette-packed(f, pi)
     Nothing  -> 255
 
-// --- close-button overlay ---------------------------------------------------
+// --- background colour ------------------------------------------------------
 //
-// The close button occupies the bottom 15% of the screen. Its
-// label "CLOSE" is composed by `typography_page.layout` (in
-// Terminal Grotesque per TYP-SRS-001 §4.4) so it goes through the
-// same alpha-buffer blit as every other piece of text on the
-// page. Render only owns the bar's *background* fill; the
-// foreground arrives via `page-pixel`.
-
-val button-bg-rgba : int = pack-rgba(20, 20, 20, 255)
-
-fun in-button(x : int, y : int, w : int, h : int) : bool
-  val (bx0, by0, bx1, by1) = button-rect(w, h)
-  x >= bx0 && x <= bx1 && y >= by0 && y <= by1
+// Everything is scrollable now — there is no sticky button bar
+// background. The page sits on plain black (0x000000FF). Both the
+// [X] (top of content) and CLOSE (bottom of content) close the app
+// via `scene.handle-tap`'s rect check.
 
 // Per-pixel render of one decoded frame at the given output size.
 // `vector-init-total` dispatches to kklib's `kk_vector_init_total`
@@ -176,27 +209,16 @@ fun render-idle(fonts : font-registry, gc : glyph-cache,
       val fresh = compose-scrollable-page(fonts, gc, w-px, h-px)
       pc := Just(Cached-page(nfonts, w-px, h-px, fresh))
       fresh
-  // Advance scroll physics for this frame.
-  val scrollable-h = h-px - top-band-h(h-px) - bottom-band-h(h-px)
-  scroll/tick(sr, now, sp.content-h, scrollable-h)
+  // Advance scroll physics for this frame. Whole viewport is the
+  // scrollable region — no sticky chrome.
+  scroll/tick(sr, now, sp.content-h, h-px)
   val sy = get-scroll-y(sr)
   render-idle-pixels(sp, sy, w, h)
 
-// Top chrome band height in pixels. Matches `scrollable-pixel` in
-// typography_page.kk (12% of viewport).
-fun top-band-h(viewport-h : int) : int
-  (viewport-h * 12) / 100
-
-// Bottom button bar height in pixels. Matches button-rect (15%).
-fun bottom-band-h(viewport-h : int) : int
-  viewport-h - (viewport-h * 85 / 100)
-
 fun render-idle-pixels(sp : scrollable-page, scroll-y : int, w : width, h : height) : vector<int>
-  val cw = w.pixels
   val ch = h.pixels
   build-pixels(w, h) fn(x, y)
-    val bg = if in-button(x.col, y.row, cw, ch) then button-bg-rgba else 255
-    scrollable-pixel(sp, x.col, y.row, scroll-y, ch, bg)
+    scrollable-pixel(sp, x.col, y.row, scroll-y, ch, 255)
 
 fun render-playing(s : session, now : float64,
                    w : width, h : height, w-px : int, h-px : int)

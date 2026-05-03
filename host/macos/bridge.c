@@ -21,6 +21,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <mach/mach_time.h>
+#include <os/log.h>
 
 #include <kklib.h>
 #include "hello.h"
@@ -73,6 +74,13 @@ extern kk_ref_t kk_scene_new_scene_cell(kk_context_t* _ctx);
 extern kk_unit_t kk_scene_handle_tap(kk_ref_t s,
     kk_integer_t x, kk_integer_t y, kk_integer_t w, kk_integer_t h,
     double exit_at_s, kk_context_t* _ctx);
+extern kk_unit_t kk_render_handle_tap_scrolled(kk_ref_t s, kk_ref_t sr, kk_ref_t pc,
+    kk_integer_t vx, kk_integer_t vy, double exit_at_s, kk_context_t* _ctx);
+extern kk_integer_t kk_scroll_get_scroll_y(kk_ref_t c, kk_context_t* _ctx);
+extern kk_integer_t kk_render_would_close_tap(kk_ref_t sr, kk_ref_t pc,
+    kk_integer_t vx, kk_integer_t vy, kk_context_t* _ctx);
+extern kk_std_core_types__tuple4 kk_render_cached_x_rect(kk_ref_t pc, kk_context_t* _ctx);
+extern kk_std_core_types__tuple4 kk_render_cached_close_rect(kk_ref_t pc, kk_context_t* _ctx);
 extern bool kk_scene_should_exit(kk_ref_t s, double now, kk_context_t* _ctx);
 extern double kk_runtime_gif_duration_s(kk_ref_t s, kk_context_t* _ctx);
 extern kk_ref_t kk_truetype_registry_new_font_registry(kk_context_t* _ctx);
@@ -363,11 +371,15 @@ void openbirds_render_frame(double now_seconds,
 void openbirds_tap(int32_t x, int32_t y,
                    int32_t width_px, int32_t height_px,
                    double now_seconds) {
-    if (width_px <= 0 || height_px <= 0) return;
+    (void)width_px;
+    (void)height_px;
+    if (x < 0 || y < 0) return;
     pthread_mutex_lock(&g_lock);
     kk_context_t* ctx = ensure_ctx();
     kk_ref_t      sc  = borrow_scene(ctx);
     kk_ref_t      sg  = borrow_session(ctx);
+    kk_ref_t      sr  = borrow_scroll(ctx);
+    kk_ref_t      pc  = borrow_pcache(ctx);
     // Compute the goodbye-animation deadline as `now + gif-duration`
     // so scene.kk doesn't need to know about runtime.kk. If no GIF
     // is loaded yet (e.g. tap landed during the load race) we fall
@@ -377,9 +389,27 @@ void openbirds_tap(int32_t x, int32_t y,
     const double exit_at_s = now_seconds + dur;
     kk_integer_t kx = kk_integer_from_int32(x, ctx);
     kk_integer_t ky = kk_integer_from_int32(y, ctx);
-    kk_integer_t kw = kk_integer_from_int32(width_px, ctx);
-    kk_integer_t kh = kk_integer_from_int32(height_px, ctx);
-    kk_scene_handle_tap(sc, kx, ky, kw, kh, exit_at_s, ctx);
+    // Diagnostic: read current scroll-y so we can correlate the
+    // viewport tap with the content-space hit-test in the log.
+    kk_ref_t      sr2 = borrow_scroll(ctx);
+    kk_integer_t  syk = kk_scroll_get_scroll_y(sr2, ctx);
+    int32_t       sy  = kk_integer_clamp32_borrow(syk, ctx);
+    // Diagnostic — ask Koka if the tap would hit a close rect.
+    // Avoids the per-call rect math in C and gives a clean
+    // pass/fail signal in the log.
+    kk_ref_t      pc2 = borrow_pcache(ctx);
+    kk_integer_t  hk  = kk_render_would_close_tap(sr2, pc2,
+                            kk_integer_from_int32(x, ctx),
+                            kk_integer_from_int32(y, ctx), ctx);
+    int32_t       hit = kk_integer_clamp32_borrow(hk, ctx);
+    os_log(OS_LOG_DEFAULT, "openbirds.bridge.tap viewport=(%d,%d) scroll-y=%d → content=(%d,%d) would-close=%d exit_at_s=%.3f",
+           x, y, sy, x, y + sy, hit, exit_at_s);
+    // The scrolled-tap dispatcher reads scroll-y, looks up the
+    // [X] / CLOSE rects from the cached scrollable-page, and
+    // converts the viewport tap to content coords for the rect
+    // check. If neither rect contains the tap, nothing happens.
+    kk_render_handle_tap_scrolled(sc, sr, pc, kx, ky, exit_at_s, ctx);
+    os_log(OS_LOG_DEFAULT, "openbirds.bridge.tap returned");
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -389,6 +419,11 @@ int32_t openbirds_should_exit(double now_seconds) {
     kk_ref_t      sc  = borrow_scene(ctx);
     bool          ex  = kk_scene_should_exit(sc, now_seconds, ctx);
     pthread_mutex_unlock(&g_lock);
+    static int logged = 0;
+    if (ex && !logged) {
+        os_log(OS_LOG_DEFAULT, "openbirds.bridge.should_exit→YES at now=%.3f", now_seconds);
+        logged = 1;
+    }
     return ex ? 1 : 0;
 }
 

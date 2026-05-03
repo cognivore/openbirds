@@ -45,11 +45,37 @@ pub fun button-rect(w : int, h : int) : (int, int, int, int)
   val by1 = h - 1
   (bx0, by0, bx1, by1)
 
-// Once the user taps inside the button, transition Idle → Exiting.
-// `exit-at-s` is `now + gif-duration-s` — the bridge computes it
-// from the loaded GIF's total-cs and passes the absolute deadline
-// here so scene.kk doesn't need to know about runtime.kk.
-// Subsequent taps (during the goodbye animation) are ignored.
+// Once the user taps inside any close-triggering rect, transition
+// Idle → Exiting. `exit-at-s` is `now + gif-duration-s` — the bridge
+// computes it from the loaded GIF's total-cs and passes the
+// absolute deadline here so scene.kk doesn't need to know about
+// runtime.kk. Subsequent taps during the goodbye animation are
+// ignored.
+//
+// The tap is `(content-x, content-y)` — the bridge has already
+// added scroll-y to the viewport-y so this scene-level check is
+// in CONTENT coordinates (the same coords the page composer
+// places its [X] and CLOSE rects at).
+pub fun handle-tap-on-rects(s : scene-cell,
+                            content-x : int, content-y : int,
+                            x-rect : (int, int, int, int),
+                            close-rect : (int, int, int, int),
+                            exit-at-s : float64)
+        : <read<global>, write<global>> ()
+  if rect-contains(x-rect, content-x, content-y) ||
+     rect-contains(close-rect, content-x, content-y) then
+    match !s
+      Idle -> s := Exiting(exit-at-s)
+      _    -> ()
+  else ()
+
+fun rect-contains(r : (int, int, int, int), x : int, y : int) : bool
+  val (x0, y0, x1, y1) = r
+  x >= x0 && x < x1 && y >= y0 && y < y1
+
+// Backwards-compat shim — old callers (a vestigial test path) hit
+// the bottom 15% bar regardless of layout. Will be removed once
+// every caller is on `handle-tap-on-rects`.
 pub fun handle-tap(s : scene-cell,
                    x : int, y : int, w : int, h : int,
                    exit-at-s : float64)

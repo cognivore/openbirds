@@ -79,3 +79,48 @@ targets:
         #    args before forwarding to ld).
         LD: $(DT_TOOLCHAIN_DIR)/usr/bin/clang
         LDPLUSPLUS: $(DT_TOOLCHAIN_DIR)/usr/bin/clang++
+
+  # XCUITest target — drives the simulator through the actual user
+  # gesture API (swipeUp, tap) to verify the scroll-and-close flow.
+  # Run with `just test-ui-scroll`.
+  #
+  # Inherits the same Xcode-26 link-driver workarounds the main
+  # target needs (LD = clang; ENABLE_DEBUG_DYLIB = NO). Without
+  # these, ld errors on the `-Xlinker -objc_abi_version` flag
+  # pattern that the test target's link line uses.
+  openbirdsUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+    info:
+      path: UITests/Info.plist
+      properties:
+        CFBundleDisplayName: openbirdsUITests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: de.memorici.openbirdsUITests
+        TEST_TARGET_NAME: openbirds
+        DEVELOPMENT_TEAM:      3MS6433L44
+        "CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]": NO
+        "CODE_SIGNING_ALLOWED[sdk=iphoneos*]":        YES
+        TARGETED_DEVICE_FAMILY: "1"
+        ARCHS: arm64
+        ONLY_ACTIVE_ARCH: YES
+        EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
+        ENABLE_DEBUG_DYLIB: NO
+        LD: $(DT_TOOLCHAIN_DIR)/usr/bin/clang
+        LDPLUSPLUS: $(DT_TOOLCHAIN_DIR)/usr/bin/clang++
+    dependencies:
+      - target: openbirds
+
+schemes:
+  openbirds:
+    build:
+      targets:
+        openbirds: all
+    test:
+      targets:
+        - openbirdsUITests
+    run:
+      executable: openbirds

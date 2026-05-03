@@ -109,28 +109,38 @@ struct FramebufferView: View {
                     }
                     let _ = pollExit()
                 }
-                // Tap + drag handling. The drag gesture wins for any
-                // movement-y over a small threshold; pure taps still
-                // fire the close-button hit-test via `onTapGesture`.
-                // We use a SwiftUI `DragGesture` rather than UIKit's
-                // pan recognizer because SwiftUI's gesture system
-                // composes more cleanly with the tap and we don't
-                // need any UIKit specifics.
+                // Tap + drag handling go through one DragGesture with
+                // minimumDistance=0 so it catches everything. If the
+                // drag's total translation is below a small threshold
+                // when the finger lifts, we treat it as a tap (and
+                // fire `openbirds_tap` at the start position). A
+                // separate `.onTapGesture` would compete with this
+                // one and one of them would lose under XCUITest, so
+                // we route everything through this single recogniser.
                 Color.black.opacity(0.001)
                     .frame(width: geo.size.width, height: geo.size.height)
                     .contentShape(Rectangle())
-                    .onTapGesture(coordinateSpace: .local) { location in
-                        handleTap(at: location, fbW: fbW, fbH: fbH, container: geo.size)
-                    }
                     .gesture(
-                        DragGesture(minimumDistance: 4, coordinateSpace: .local)
+                        DragGesture(minimumDistance: 0, coordinateSpace: .local)
                             .onChanged { value in
                                 handleDrag(value: value, fbH: fbH, container: geo.size)
                             }
-                            .onEnded { _ in
+                            .onEnded { value in
                                 let now = CFAbsoluteTimeGetCurrent() - Self.startTime
-                                openbirds_pan_end(now)
-                                isPanning = false
+                                let dy = abs(value.translation.height)
+                                let dx = abs(value.translation.width)
+                                NSLog("openbirds.gesture.end: start=(%.1f,%.1f) end=(%.1f,%.1f) dx=%.1f dy=%.1f isPanning=%d",
+                                      value.startLocation.x, value.startLocation.y,
+                                      value.location.x, value.location.y,
+                                      dx, dy, isPanning ? 1 : 0)
+                                if dx < 10 && dy < 10 {
+                                    // Treated as a tap.
+                                    if isPanning { openbirds_pan_end(now); isPanning = false }
+                                    handleTap(at: value.startLocation, fbW: fbW, fbH: fbH, container: geo.size)
+                                } else {
+                                    openbirds_pan_end(now)
+                                    isPanning = false
+                                }
                             }
                     )
             }
@@ -170,6 +180,7 @@ struct FramebufferView: View {
     private func pollExit() -> Bool {
         let now = CFAbsoluteTimeGetCurrent() - Self.startTime
         if openbirds_should_exit(now) != 0 {
+            NSLog("openbirds.app.exit: should_exit returned 1 at now=%.3f, calling exit(0)", now)
             exit(0)
         }
         return false

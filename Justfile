@@ -309,6 +309,29 @@ build-bench-compose:
 bench-compose: build-bench-compose
     ./build/bench-compose host/ios/Resources 10
 
+# --- e2e UI test (Stage 5/scroll) ------------------------------------------
+
+# Run the XCUITest that scrolls to the bottom and taps CLOSE,
+# verifying the app exits. Boots an iPhone 17 Pro simulator.
+test-ui-scroll: ios-build
+    @APP=$(find build/ios-derived/Build/Products/Debug-iphonesimulator -name 'openbirds.app' -type d | head -1); \
+    [ -n "$APP" ] || { echo "openbirds.app not found" >&2; exit 1; }; \
+    DEV_ID=$(xcrun simctl list devices available | awk -F '[()]' '/iPhone 17 Pro \(/ {print $2; exit}'); \
+    [ -n "$DEV_ID" ] || { echo "no iPhone 17 Pro simulator" >&2; exit 1; }; \
+    echo ">>> booting $DEV_ID"; \
+    xcrun simctl boot "$DEV_ID" 2>/dev/null || true; \
+    xcrun simctl bootstatus "$DEV_ID" -b; \
+    echo ">>> running UI test"; \
+    xcodebuild test \
+      -project host/ios/openbirds.xcodeproj \
+      -scheme openbirds \
+      -sdk iphonesimulator \
+      -destination "id=$DEV_ID" \
+      -derivedDataPath build/ios-derived \
+      -only-testing:openbirdsUITests \
+      CODE_SIGNING_ALLOWED=NO \
+      | tail -40
+
 # --- Hygiene ----------------------------------------------------------------
 
 clean:

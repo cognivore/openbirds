@@ -128,9 +128,17 @@ struct run
 // plus the natural content-height in pixels. Height is computed
 // from where the bottom-most run baseline lands plus a margin —
 // the render layer needs it to know when to bounce the scroll.
+//
+// `x-rect` and `close-rect` are the hit-test regions for the [X]
+// at the top of content and the CLOSE button at the bottom of
+// content, both in CONTENT coordinates. The tap layer converts
+// viewport-y → content-y via `+ scroll-y` and checks the tap
+// against both rects.
 pub struct content-layout
-  runs      : list<run>
-  height-px : int
+  runs       : list<run>
+  height-px  : int
+  x-rect     : (int, int, int, int)   // (x0, y0, x1, y1) in content coords
+  close-rect : (int, int, int, int)
 
 // Lay out the page as a list of runs.
 //
@@ -230,14 +238,12 @@ fun layout(reg : font-registry, w : int, h : int) : <div, read<global>> list<run
 
 // --- scrollable content layout --------------------------------------------
 //
-// Lays out a TALL content region (no top chrome, no bottom CLOSE
-// — those are fixed overlays in render.kk). Returns the runs plus
-// the natural content-height in pixels so the render layer can
-// clamp scroll-y and trigger bounce.
-//
-// Sizes still scale with viewport-h for visual consistency (so
-// 14pt body looks the same regardless of device); content-h
-// grows with the amount of text content, not with viewport.
+// Everything is scrollable — no sticky chrome bands. The chrome row
+// sits at the TOP of content, the CLOSE button sits at the BOTTOM
+// of content, both move with the scroll. Tap-to-close works on
+// whichever of [X] or CLOSE is currently visible — the hit-test in
+// `scene.kk` checks both content-rects against the tap converted
+// to content coords via scroll-y.
 pub fun layout-content(reg : font-registry, w : int, viewport-h : int)
         : <div, read<global>> content-layout
   fun hpct(p : int) : int
@@ -247,25 +253,38 @@ pub fun layout-content(reg : font-registry, w : int, viewport-h : int)
   val left     = pad
   val text-w   = w - 2 * pad
 
-  // Heading (Jost*). Starts below the chrome band (12% of viewport)
-  // plus a comfortable top margin, so scrolling reveals it from
-  // under the chrome rather than clipping it.
-  val head-y-a = hpct(180)
+  // ----- chrome row at top of content -----------------------------------
+  // Pushed below the iOS status-bar safe area (~50 logical px on
+  // iPhone 17 Pro). The tap on [X] needs to land below the system
+  // status-bar — taps in y < ~50 get intercepted as
+  // UIStatusBarTapAction (scroll-to-top) and never reach our view.
+  val chrome-y = hpct(140)
+  val x-w      = hpct(120)
+  val x-h      = hpct(120)
+  val x-x0     = w - x-w - pad
+  val x-y0     = chrome-y - x-h * 2 / 3
+  val r-menu   = Run("menu",   "TerminalGrotesque", hpct(34), left,                chrome-y, accent-rgba)
+  val r-main   = Run("main()", "Terminus",          hpct(30), left + hpct(120),    chrome-y, mono-rgba)
+  val r-x      = Run("[X]",    "TerminalGrotesque", hpct(40), x-x0 + hpct(20),     chrome-y, accent-rgba)
+  val x-rect   = (x-x0, x-y0, x-x0 + x-w, x-y0 + x-h)
+
+  // ----- heading (Jost*) -------------------------------------------------
+  val head-y-a = chrome-y + hpct(80)
   val head-y-b = head-y-a + hpct(78)
   val r-h1     = Run("Open self-care",  "Jost", hpct(74), left, head-y-a, ink-rgba)
   val r-h2     = Run("on your terms.",  "Jost", hpct(74), left, head-y-b, ink-rgba)
 
-  // Body paragraph 1.
+  // ----- body paragraph 1 (lead) ----------------------------------------
   val body-y    = head-y-b + hpct(80)
   val body-step = hpct(40)
   val body-sz   = hpct(34)
-  val body-a   = "There is no way a single non-profit or commercial organisation can sustain a culturally sensitive and sensible content-rich self-care application."
-  val b1-lines = wrap-with-font(reg, "EBGaramond", body-a, body-sz, text-w)
-  val b1-runs  = b1-lines.map-indexed fn(i, line)
+  val body-a    = "There is no way a single non-profit or commercial organisation can sustain a culturally sensitive and sensible content-rich self-care application. The incentive shapes the product — ad-funded means your moods become inventory, paywall-funded means the people who actually need it cannot reach it."
+  val ba-lines = wrap-with-font(reg, "EBGaramond", body-a, body-sz, text-w)
+  val ba-runs  = ba-lines.map-indexed fn(i, line)
     Run(line, "EBGaramond", body-sz, left, body-y + i * body-step, ink-rgba)
 
-  // Code snippet.
-  val code-y    = body-y + b1-lines.length * body-step + hpct(54)
+  // ----- code snippet ---------------------------------------------------
+  val code-y    = body-y + ba-lines.length * body-step + hpct(54)
   val code-step = hpct(36)
   val code-sz   = hpct(28)
   val code-x    = left + hpct(28)
@@ -274,15 +293,15 @@ pub fun layout-content(reg : font-registry, w : int, viewport-h : int)
   val code-runs = code-lines.map-indexed fn(i, line)
     Run(line, "Terminus", code-sz, code-x, code-y + i * code-step, mono-rgba)
 
-  // Body paragraph 2 — explanation.
+  // ----- body paragraph 2 (architecture) --------------------------------
   val bodyb-y   = code-y + code-lines.length * code-step + hpct(54)
-  val body-b    = "The architecture commits to one rendering primitive: an RGBA byte buffer. The rest of the stack is plumbing around it. Type the perimeter, own the implementation, and the cultural decisions stay close to the people who make them."
-  val b2-lines  = wrap-with-font(reg, "EBGaramond", body-b, body-sz, text-w)
-  val b2-runs   = b2-lines.map-indexed fn(i, line)
+  val body-b    = "The architecture commits to one rendering primitive: an RGBA byte buffer. Koka does the brain work — every effect that touches the network, storage, or the platform has to declare itself in the type system, so we cannot accidentally leak a mood across the FFI without the compiler shouting at us. Pretty robust seam, in practice."
+  val bb-lines  = wrap-with-font(reg, "EBGaramond", body-b, body-sz, text-w)
+  val bb-runs   = bb-lines.map-indexed fn(i, line)
     Run(line, "EBGaramond", body-sz, left, bodyb-y + i * body-step, ink-rgba)
 
-  // Pull quote (Cormorant Garamond).
-  val pull-y    = bodyb-y + b2-lines.length * body-step + hpct(72)
+  // ----- pull quote -----------------------------------------------------
+  val pull-y    = bodyb-y + bb-lines.length * body-step + hpct(72)
   val pull-step = hpct(54)
   val pull-sz   = hpct(50)
   val pull-text = "Thus, we are liberating it."
@@ -290,45 +309,52 @@ pub fun layout-content(reg : font-registry, w : int, viewport-h : int)
   val pull-runs = pull-lines.map-indexed fn(i, line)
     Run(line, "CormorantGaramond", pull-sz, left, pull-y + i * pull-step, quote-rgba)
 
-  // Body paragraph 3 — closing.
+  // ----- body paragraph 3 (encryption) ----------------------------------
   val bodyc-y   = pull-y + pull-lines.length * pull-step + hpct(54)
-  val body-c    = "From here we build mood tracking, breathing sessions, gentle pet companionship, and a friendship channel that the server never reads. Every pixel comes from this Koka brain."
-  val b3-lines  = wrap-with-font(reg, "EBGaramond", body-c, body-sz, text-w)
-  val b3-runs   = b3-lines.map-indexed fn(i, line)
+  val body-c    = "Friendship channels are X3DH plus Double Ratchet. Identity is an Ed25519 keypair you keep on your device, and the user-facing friend code is just a public-key fingerprint. No email, no phone, no username server-side. No directory. If you want to add a friend you exchange fingerprints — by QR code, by reading them out loud, whatever feels appropriate. The trust decision is yours."
+  val bc-lines  = wrap-with-font(reg, "EBGaramond", body-c, body-sz, text-w)
+  val bc-runs   = bc-lines.map-indexed fn(i, line)
     Run(line, "EBGaramond", body-sz, left, bodyc-y + i * body-step, ink-rgba)
 
-  val all-runs = [ r-h1, r-h2 ] ++ b1-runs ++ code-runs ++ b2-runs ++ pull-runs ++ b3-runs
-  // Content height = baseline of last run + descender margin.
-  val last-y   = bodyc-y + (b3-lines.length - 1) * body-step
-  val content-h = last-y + hpct(80)
-  Content-layout(all-runs, content-h)
+  // ----- body paragraph 4 (local-first) ---------------------------------
+  val bodyd-y   = bodyc-y + bc-lines.length * body-step + hpct(54)
+  val body-d    = "Local-first by construction: every feature works offline. Sync is opt-in and additive — bring your own server (a Hetzner box, a friend's Raspberry Pi, a Cloudflare R2 bucket) where the server only sees encrypted blobs and content addresses. We never see your data. We cannot."
+  val bd-lines  = wrap-with-font(reg, "EBGaramond", body-d, body-sz, text-w)
+  val bd-runs   = bd-lines.map-indexed fn(i, line)
+    Run(line, "EBGaramond", body-sz, left, bodyd-y + i * body-step, ink-rgba)
 
-// --- chrome (top + bottom) overlays ---------------------------------------
+  // ----- body paragraph 5 (no telemetry) --------------------------------
+  val bodye-y   = bodyd-y + bd-lines.length * body-step + hpct(54)
+  val body-e    = "No telemetry. No analytics. No third-party SDKs. Zero. The business model is a one-time purchase or platform-billed subscription, never user data. If that sounds religious, it is — every small data leak is a brick in the surveillance economy you wake up to in five years and cannot unbuild. We refuse to lay the brick."
+  val be-lines  = wrap-with-font(reg, "EBGaramond", body-e, body-sz, text-w)
+  val be-runs   = be-lines.map-indexed fn(i, line)
+    Run(line, "EBGaramond", body-sz, left, bodye-y + i * body-step, ink-rgba)
 
-// Fixed top chrome row: "menu" (Terminal Grotesque), "main()"
-// (Terminus), "[X]" (Terminal Grotesque). Composed once and
-// blitted unscrolled at the top of the viewport.
-pub fun layout-chrome-top(w : int, viewport-h : int) : list<run>
-  fun hpct(p : int) : int
-    val v = (p * viewport-h) / 1000
-    if v < 6 then 6 else v
-  val pad      = hpct(28)
-  val left     = pad
-  val chrome-y = hpct(70)
-  [ Run("menu",   "TerminalGrotesque", hpct(28), left,                chrome-y, accent-rgba),
-    Run("main()", "Terminus",          hpct(28), left + hpct(110),    chrome-y, mono-rgba),
-    Run("[X]",    "TerminalGrotesque", hpct(28), w - hpct(60) - pad,  chrome-y, accent-rgba) ]
+  // ----- body paragraph 6 (closing) -------------------------------------
+  val bodyf-y   = bodye-y + be-lines.length * body-step + hpct(54)
+  val body-f    = "From here we build mood tracking, breathing sessions, gentle pet companionship, append-only personal history, a friendship channel the server never reads. Every pixel comes from this Koka brain. Pretty tight design constraint, all of it. Let us see what we can build."
+  val bf-lines  = wrap-with-font(reg, "EBGaramond", body-f, body-sz, text-w)
+  val bf-runs   = bf-lines.map-indexed fn(i, line)
+    Run(line, "EBGaramond", body-sz, left, bodyf-y + i * body-step, ink-rgba)
 
-// Fixed bottom chrome: CLOSE button label, centred in the bottom
-// 15% bar. Render.kk paints the bar background separately.
-pub fun layout-chrome-bottom(w : int, viewport-h : int) : list<run>
-  val close-bar-h = viewport-h - (viewport-h * 85 / 100)
-  val close-bar-y0 = viewport-h - close-bar-h
-  val close-sz    = (close-bar-h * 50) / 100
-  val close-est-w = close-sz * 4
-  val close-x     = (w - close-est-w) / 2
-  val close-y     = close-bar-y0 + (close-bar-h * 7) / 10
-  [ Run("CLOSE", "TerminalGrotesque", close-sz, close-x, close-y, ink-rgba) ]
+  // ----- CLOSE button at bottom of content ------------------------------
+  val close-band-h  = hpct(180)
+  val close-band-y0 = bodyf-y + bf-lines.length * body-step + hpct(80)
+  val close-sz      = (close-band-h * 50) / 100
+  val close-est-w   = close-sz * 4
+  val close-x       = (w - close-est-w) / 2
+  val close-y       = close-band-y0 + (close-band-h * 7) / 10
+  val r-close       = Run("CLOSE", "TerminalGrotesque", close-sz, close-x, close-y, ink-rgba)
+  val close-rect    = (0, close-band-y0, w, close-band-y0 + close-band-h)
+
+  val all-runs =
+    [ r-menu, r-main, r-x,
+      r-h1, r-h2 ] ++
+      ba-runs ++ code-runs ++ bb-runs ++ pull-runs ++
+      bc-runs ++ bd-runs ++ be-runs ++ bf-runs ++
+    [ r-close ]
+  val content-h = close-band-y0 + close-band-h + hpct(40)
+  Content-layout(all-runs, content-h, x-rect, close-rect)
 
 // --- composition ---------------------------------------------------------
 
@@ -405,50 +431,41 @@ pub fun compose-page(reg : font-registry, gc : glyph-cache, w : int, h : int)
 
 // --- scrollable composition -----------------------------------------------
 
-// Three buffers needed for a scrollable layout:
-//   - content : tall buffer with the body content (heading, prose,
-//               code, pull quote). Render samples it at scroll-y.
-//   - top     : fixed at viewport top (menu / main / [X]).
-//   - bottom  : fixed at viewport bottom (CLOSE).
-// Plus the natural content-h so render can clamp scroll-y.
+// Single content buffer + the close-rects (in CONTENT coords) +
+// the natural content height. Everything is scrollable; nothing is
+// sticky. Render samples `content` at offset `y + scroll-y`. Tap
+// handling resolves a viewport tap to a content tap and checks
+// against `x-rect` / `close-rect`.
 pub struct scrollable-page
   content      : rendered-page
   content-h    : int
-  top          : rendered-page
-  bottom       : rendered-page
+  x-rect       : (int, int, int, int)
+  close-rect   : (int, int, int, int)
 
 pub fun compose-scrollable-page(reg : font-registry, gc : glyph-cache,
                                 viewport-w : int, viewport-h : int)
         : <div, read<global>, write<global>> scrollable-page
-  // 1. Lay out the scrollable body content — discover its height
-  //    from the layout-content function.
   val cl = layout-content(reg, viewport-w, viewport-h)
-  // 2. Compose the content into a buffer sized to its natural height
-  //    (clamped to at least viewport so cropping never reads OOB).
   val content-h-clamped = if cl.height-px < viewport-h then viewport-h else cl.height-px
   val cp = blank-page(viewport-w, content-h-clamped)
   draw-runs(cp, reg, gc, cl.runs)
-  // 3. Compose top + bottom chrome at viewport size; only the bands
-  //    they actually occupy are non-zero, so they're cheap to blit.
-  val tp = blank-page(viewport-w, viewport-h)
-  draw-runs(tp, reg, gc, layout-chrome-top(viewport-w, viewport-h))
-  val bp = blank-page(viewport-w, viewport-h)
-  draw-runs(bp, reg, gc, layout-chrome-bottom(viewport-w, viewport-h))
-  Scrollable-page(cp, content-h-clamped, tp, bp)
+  Scrollable-page(cp, content-h-clamped, cl.x-rect, cl.close-rect)
 
 // Sample the scrollable layout at viewport coord (x, y) given the
-// current scroll-y and a background colour. The fixed top + bottom
-// chrome regions take precedence; the middle body samples
-// `content` at offset `y + scroll-y` (so increasing scroll-y
-// reveals later content).
+// current scroll-y and a background colour. Maps directly onto the
+// content buffer at `y + scroll-y`; everything scrolls.
 pub fun scrollable-pixel(sp : scrollable-page, x : int, y : int,
                          scroll-y : int, viewport-h : int, bg : int) : int
-  val close-bar-h = viewport-h - (viewport-h * 85 / 100)
-  val top-h       = (viewport-h * 12) / 100        // top chrome region
-  if y < top-h then
-    page-pixel(sp.top, x, y, bg)
-  elif y >= viewport-h - close-bar-h then
-    page-pixel(sp.bottom, x, y, bg)
-  else
-    val cy = y + scroll-y
-    page-pixel(sp.content, x, cy, bg)
+  val cy = y + scroll-y
+  page-pixel(sp.content, x, cy, bg)
+
+// True if (content-x, content-y) lies inside either of the two
+// close-triggering rects. Caller has already converted the tap
+// from viewport coords via `+ scroll-y`.
+pub fun is-close-tap(sp : scrollable-page, content-x : int, content-y : int) : bool
+  rect-contains(sp.x-rect, content-x, content-y) ||
+  rect-contains(sp.close-rect, content-x, content-y)
+
+fun rect-contains(r : (int, int, int, int), x : int, y : int) : bool
+  val (x0, y0, x1, y1) = r
+  x >= x0 && x < x1 && y >= y0 && y < y1
