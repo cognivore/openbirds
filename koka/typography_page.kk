@@ -247,8 +247,10 @@ pub fun layout-content(reg : font-registry, w : int, viewport-h : int)
   val left     = pad
   val text-w   = w - 2 * pad
 
-  // Heading (Jost*).
-  val head-y-a = hpct(120)
+  // Heading (Jost*). Starts below the chrome band (12% of viewport)
+  // plus a comfortable top margin, so scrolling reveals it from
+  // under the chrome rather than clipping it.
+  val head-y-a = hpct(180)
   val head-y-b = head-y-a + hpct(78)
   val r-h1     = Run("Open self-care",  "Jost", hpct(74), left, head-y-a, ink-rgba)
   val r-h2     = Run("on your terms.",  "Jost", hpct(74), left, head-y-b, ink-rgba)
@@ -267,7 +269,7 @@ pub fun layout-content(reg : font-registry, w : int, viewport-h : int)
   val code-step = hpct(36)
   val code-sz   = hpct(28)
   val code-x    = left + hpct(28)
-  val code-text = "pub fun with-host(action : () -> <host|e> a) : e a"
+  val code-text = "pub fun render(p : page, sy : int) : pixel ()"
   val code-lines = wrap-with-font(reg, "Terminus", code-text, code-sz, text-w - hpct(28))
   val code-runs = code-lines.map-indexed fn(i, line)
     Run(line, "Terminus", code-sz, code-x, code-y + i * code-step, mono-rgba)
