@@ -338,8 +338,11 @@ pub fun get-glyph-shape(info : font-info, glyph-index : int) : <div,exn> list<ve
     val num-contours    = i16(data, g)
     if num-contours == 0 then []
     elif num-contours < 0 then
-      throw("truetype/outline: compound glyph (numberOfContours = " ++
-            num-contours.show ++ ") not yet supported")
+      // Compound glyph: not yet supported. Returning empty silently
+      // is the right call here — the surrounding layout still
+      // renders every other glyph; only this one shows as blank.
+      // Throwing would abandon the whole text run.
+      []
     else
       // Load the per-contour endpoint indices.
       val end-pts-off  = g + 10

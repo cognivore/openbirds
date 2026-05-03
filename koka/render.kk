@@ -36,6 +36,8 @@ import runtime
 import scene
 import font
 import text
+import truetype/registry
+import typography_page
 
 // --- fallback test pattern (no GIF loaded) -----------------------------------
 
@@ -157,33 +159,37 @@ fun render-frame-pixels(f : decoded-frame, w : width, h : height) : vector<int>
 
 val idle-screen-key : int = -1   // cache sentinel for the static idle frame
 
-pub fun frame-rgba(s : session, sc : scene-cell, now : float64, w-px : int, h-px : int)
+pub fun frame-rgba(s : session, sc : scene-cell, fonts : font-registry,
+                   now : float64, w-px : int, h-px : int)
         : <pure, read<global>, write<global>> vector<int>
   val w = Width(w-px)
   val h = Height(h-px)
   if show-gif(sc) then render-playing(s, now, w, h, w-px, h-px)
-  else render-idle(s, w, h, w-px, h-px)
+  else render-idle(s, fonts, w, h, w-px, h-px)
 
-// Static black + close-button screen. Cached once and reused across
-// every Idle tick (the cache lives inside the loaded-gif if one is
-// loaded; otherwise we pay ~5 ms per tick to re-render — acceptable
-// since the load happens within a couple of seconds of launch).
-fun render-idle(s : session, w : width, h : height, w-px : int, h-px : int)
+// Idle screen = composed typography page (TYP-SRS-001 acceptance
+// test) with the close-button bar overlaid on the bottom 15%.
+// Cached on first paint and re-blitted every tick; the page
+// composer is ~hundreds of glyph-rasterisations and would chew
+// the frame budget if recomputed every frame.
+fun render-idle(s : session, fonts : font-registry,
+                w : width, h : height, w-px : int, h-px : int)
         : <pure, read<global>, write<global>> vector<int>
   match cached-pixels(s, idle-screen-key, w-px, h-px)
     Just(buf) -> buf
     Nothing ->
-      val buf = render-idle-pixels(w, h)
+      val page = compose-page(fonts, w-px, h-px)
+      val buf  = render-idle-pixels(page, w, h)
       store-pixels(s, idle-screen-key, w-px, h-px, buf)
       buf
 
-fun render-idle-pixels(w : width, h : height) : vector<int>
+fun render-idle-pixels(page : rendered-page, w : width, h : height) : vector<int>
   val cw = w.pixels
   val ch = h.pixels
   val label = close-layout(cw, ch)
   build-pixels(w, h) fn(x, y)
     if in-button(x.col, y.row, cw, ch) then button-pixel(label, x.col, y.row)
-    else 255         // 0x000000FF — opaque black
+    else page-pixel(page, x.col, y.row, 255)   // 0x000000FF black background
 
 fun render-playing(s : session, now : float64,
                    w : width, h : height, w-px : int, h-px : int)

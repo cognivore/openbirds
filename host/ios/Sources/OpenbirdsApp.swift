@@ -39,15 +39,13 @@ struct OpenbirdsApp: App {
                 }
             }
         }
-        // Same pattern for any TTF font bundled in Resources/. We
-        // ship them via a tiny manifest so adding new typefaces is
-        // a one-line change at the call site.
-        loadBundledFont(name: "Terminus", file: "TerminusTTF-Bold-Nerd-Font-Complete.ttf",
-                        fallbacks: ["TerminusTTF.ttf", "Terminus.ttf"])
-        loadBundledFont(name: "EBGaramond", file: "EBGaramond-Regular.ttf",
-                        fallbacks: [])
-        loadBundledFont(name: "Jost", file: "Jost-Medium.ttf",
-                        fallbacks: ["Jost-VariableFont_wght.ttf"])
+        // Bundle all five TYP-SRS-001 typefaces. Names match the
+        // string Koka's `typography_page.kk` looks up in the registry.
+        loadBundledFont(name: "Terminus",          file: "TerminusTTF.ttf",                fallbacks: ["TerminusTTF-Bold-Nerd-Font-Complete.ttf"])
+        loadBundledFont(name: "EBGaramond",        file: "EBGaramond-Regular.ttf",         fallbacks: [])
+        loadBundledFont(name: "Jost",              file: "Jost-Medium.ttf",                fallbacks: ["Jost-VariableFont_wght.ttf"])
+        loadBundledFont(name: "CormorantGaramond", file: "CormorantGaramond-Regular.ttf",  fallbacks: [])
+        loadBundledFont(name: "TerminalGrotesque", file: "terminal-grotesque.ttf",         fallbacks: [])
     }
 
     private func loadBundledFont(name: String, file: String, fallbacks: [String]) {

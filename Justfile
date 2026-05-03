@@ -41,7 +41,14 @@ build-dylib:
     @# initialises every transitively-imported module. The unused C
     @# entry point is renamed via --output-entry so it doesn't clash
     @# with our dylib (which has no `int main`).
+    @# Add `koka/` to the include path so transitively-imported
+    @# modules like `truetype/registry` resolve under it. The `=`
+    @# form is required: `-i koka` is parsed as the empty include
+    @# plus a positional file `koka`. Stay at the repo root so the
+    @# generated module symbol prefix stays `kk_koka_hello_*` —
+    @# that's what `host/macos/bridge.c` is wired against.
     koka --target=c -O2 \
+      --include=koka \
       --builddir=build/koka \
       --output-entry=koka_unused_entry \
       koka/hello.kk
