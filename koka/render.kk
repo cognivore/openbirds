@@ -37,6 +37,7 @@ import scene
 import font
 import text
 import truetype/registry
+import truetype/glyph_cache
 import typography_page
 
 // --- fallback test pattern (no GIF loaded) -----------------------------------
@@ -132,25 +133,29 @@ fun render-frame-pixels(f : decoded-frame, w : width, h : height) : vector<int>
 fun idle-cache-key(font-count : int) : int
   0 - (1 + font-count)
 
-pub fun frame-rgba(s : session, sc : scene-cell, fonts : font-registry,
+pub fun frame-rgba(s : session, sc : scene-cell, fonts : font-registry, gc : glyph-cache,
                    now : float64, w-px : int, h-px : int)
         : <pure, read<global>, write<global>> vector<int>
   val w = Width(w-px)
   val h = Height(h-px)
   if show-gif(sc) then render-playing(s, now, w, h, w-px, h-px)
-  else render-idle(s, fonts, w, h, w-px, h-px)
+  else render-idle(s, fonts, gc, w, h, w-px, h-px)
 
 // Idle screen = composed typography page (TYP-SRS-001 acceptance
 // test) with the close-button bar overlaid on the bottom 15%.
-// Cached per-(font-count, w, h); see `idle-cache-key`.
-fun render-idle(s : session, fonts : font-registry,
+// Cached per-(font-count, w, h); see `idle-cache-key`. The glyph
+// cache amortises rasterisation across cache invalidations: each
+// new font registration invalidates the framebuffer cache, but the
+// per-glyph alpha bitmaps live in the persistent glyph-cache so
+// the next compose only rasterises the genuinely-new glyphs.
+fun render-idle(s : session, fonts : font-registry, gc : glyph-cache,
                 w : width, h : height, w-px : int, h-px : int)
         : <pure, read<global>, write<global>> vector<int>
   val key = idle-cache-key(registry-names(fonts).length)
   match cached-pixels(s, key, w-px, h-px)
     Just(buf) -> buf
     Nothing ->
-      val page = compose-page(fonts, w-px, h-px)
+      val page = compose-page(fonts, gc, w-px, h-px)
       val buf  = render-idle-pixels(page, w, h)
       store-pixels(s, key, w-px, h-px, buf)
       buf

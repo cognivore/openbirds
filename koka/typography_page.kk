@@ -28,6 +28,7 @@ import truetype/registry
 import truetype/raster
 import truetype/text
 import truetype/metrics
+import truetype/glyph_cache
 
 // --- text wrapping helper --------------------------------------------------
 
@@ -256,24 +257,19 @@ fun blit-cols(p : rendered-page, bm : bitmap, ox : int, oy : int, fg : int,
     else ()
     blit-cols(p, bm, ox, oy, fg, bmw, by, bx + 1)
 
-// Render one run by looking up its font, calling truetype/text, and
-// blitting each placed glyph into the page. Missing fonts are
-// silently skipped — the text still won't appear, but the rest of
-// the page composes.
-fun draw-run(p : rendered-page, reg : font-registry, r : run)
-        : <div, read<global>> ()
+// Render one run by looking up its font, calling truetype/text via
+// the cached glyph path, and blitting each placed glyph into the
+// page. Missing fonts are silently skipped — the text still won't
+// appear, but the rest of the page composes.
+fun draw-run(p : rendered-page, reg : font-registry, gc : glyph-cache, r : run)
+        : <div, read<global>, write<global>> ()
   match lookup(reg, r.font)
     Nothing -> ()
     Just(info) ->
-      match render-string-safe(info, r.text, r.size-px.float64,
-                               r.origin-x, r.baseline-y, r.fg)
-        Nothing -> ()
-        Just((glyphs, _w)) ->
-          blit-glyphs(p, glyphs)
-
-fun render-string-safe(info : font-info, s : string, size : float64,
-                       ox : int, by : int, fg : int) : div maybe<(list<placed-glyph>, int)>
-  error/try({ render-string(info, s, size, ox, by, fg) }).maybe
+      val (glyphs, _w) = render-string-cached(gc, r.font, info, r.text,
+                                              r.size-px.float64,
+                                              r.origin-x, r.baseline-y, r.fg)
+      blit-glyphs(p, glyphs)
 
 fun blit-glyphs(p : rendered-page, gs : list<placed-glyph>) : div ()
   match gs
@@ -282,18 +278,18 @@ fun blit-glyphs(p : rendered-page, gs : list<placed-glyph>) : div ()
       blit-glyph(p, g)
       blit-glyphs(p, rest)
 
-fun draw-runs(p : rendered-page, reg : font-registry, rs : list<run>)
-        : <div, read<global>> ()
+fun draw-runs(p : rendered-page, reg : font-registry, gc : glyph-cache, rs : list<run>)
+        : <div, read<global>, write<global>> ()
   match rs
     Nil -> ()
     Cons(r, rest) ->
-      draw-run(p, reg, r)
-      draw-runs(p, reg, rest)
+      draw-run(p, reg, gc, r)
+      draw-runs(p, reg, gc, rest)
 
 // --- public entry: compose the whole page ---------------------------------
 
-pub fun compose-page(reg : font-registry, w : int, h : int)
-        : <div, read<global>> rendered-page
+pub fun compose-page(reg : font-registry, gc : glyph-cache, w : int, h : int)
+        : <div, read<global>, write<global>> rendered-page
   val p = blank-page(w, h)
-  draw-runs(p, reg, layout(reg, w, h))
+  draw-runs(p, reg, gc, layout(reg, w, h))
   p

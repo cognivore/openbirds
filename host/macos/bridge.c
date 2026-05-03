@@ -78,6 +78,7 @@ extern double kk_runtime_gif_duration_s(kk_ref_t s, kk_context_t* _ctx);
 extern kk_ref_t kk_truetype_registry_new_font_registry(kk_context_t* _ctx);
 extern kk_unit_t kk_truetype_registry_register(kk_ref_t r, kk_string_t name,
     kk_vector_t bytes, kk_context_t* _ctx);
+extern kk_ref_t kk_truetype_glyph__cache_new_glyph_cache(kk_context_t* _ctx);
 
 // --- session lifecycle ------------------------------------------------------
 
@@ -88,6 +89,8 @@ static kk_ref_t      g_scene;
 static bool          g_scene_init       = false;
 static kk_ref_t      g_fonts;
 static bool          g_fonts_init       = false;
+static kk_ref_t      g_glyphs;
+static bool          g_glyphs_init      = false;
 
 static kk_context_t* ensure_ctx(void) {
     if (g_ctx == NULL) {
@@ -111,6 +114,14 @@ static kk_ref_t borrow_fonts(kk_context_t* ctx) {
         g_fonts_init = true;
     }
     return kk_ref_dup(g_fonts, ctx);
+}
+
+static kk_ref_t borrow_glyphs(kk_context_t* ctx) {
+    if (!g_glyphs_init) {
+        g_glyphs      = kk_truetype_glyph__cache_new_glyph_cache(ctx);
+        g_glyphs_init = true;
+    }
+    return kk_ref_dup(g_glyphs, ctx);
 }
 
 // Lazily create the Koka-side session ref the first time something
@@ -139,6 +150,10 @@ void openbirds_shutdown(void) {
         if (g_fonts_init) {
             kk_ref_drop(g_fonts, g_ctx);
             g_fonts_init = false;
+        }
+        if (g_glyphs_init) {
+            kk_ref_drop(g_glyphs, g_ctx);
+            g_glyphs_init = false;
         }
         kk_hello__main__done(g_ctx);
         kk_main_end(g_ctx);
@@ -252,10 +267,11 @@ void openbirds_render_frame(double now_seconds,
     kk_ref_t      s   = borrow_session(ctx);
     kk_ref_t      sc  = borrow_scene(ctx);
     kk_ref_t      fr  = borrow_fonts(ctx);
+    kk_ref_t      gc  = borrow_glyphs(ctx);
 
     kk_integer_t w = kk_integer_from_int32(width_px, ctx);
     kk_integer_t h = kk_integer_from_int32(height_px, ctx);
-    kk_vector_t  v = kk_render_frame_rgba(s, sc, fr, now_seconds, w, h, ctx);
+    kk_vector_t  v = kk_render_frame_rgba(s, sc, fr, gc, now_seconds, w, h, ctx);
 
     kk_ssize_t len = 0;
     const kk_box_t* boxes = kk_vector_buf_borrow(v, &len, ctx);

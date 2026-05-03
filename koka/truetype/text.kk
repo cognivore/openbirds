@@ -30,6 +30,7 @@ import truetype/cmap
 import truetype/outline
 import truetype/metrics
 import truetype/raster
+import truetype/glyph_cache
 
 // One glyph blitted onto the framebuffer at pixel position (px, py).
 // `bm` is the alpha bitmap from rasterize-shape; `fg` is the packed
@@ -39,6 +40,34 @@ pub struct placed-glyph
   py : int
   bm : bitmap
   fg : int
+
+// Pure per-glyph rasterisation, position-independent. This is the
+// CACHEABLE unit — it doesn't depend on pen position or the
+// foreground colour, so a `(font-name, codepoint, size-px)` triple
+// is a sufficient cache key.
+//
+// Returns: (alpha bitmap, bbox-x-offset, bbox-y-offset,
+//           pixel-advance, glyph-index).
+//
+// Empty glyph (space, .notdef when font is missing the codepoint)
+// returns `empty-bitmap` plus the hmtx advance — callers still get
+// a width to advance the pen by.
+pub fun rasterise-glyph(info : font-info, codepoint : int, size : float64)
+        : <div,exn> (bitmap, int, int, int, int)
+  val scale     = scale-for-pixel-height(info, size)
+  val gi        = find-glyph-index(info, codepoint)
+  val (advance-fu, _lsb) = get-glyph-h-metrics(info, gi)
+  val advance-px = (advance-fu.float64 * scale + 0.5).floor.int
+  val verts     = get-glyph-shape(info, gi)
+  val box       = get-glyph-box(info, gi)
+  val (ix0, iy0, ix1, iy1) = glyph-bitmap-box-from-box(box, scale, scale)
+  val w         = ix1 - ix0
+  val h         = iy1 - iy0
+  if w <= 0 || h <= 0 then
+    (empty-bitmap, 0, 0, advance-px, gi)
+  else
+    val bm = rasterize-shape(verts, w, h, scale, scale, 0.0, 0.0, ix0, iy0)
+    (bm, ix0, iy0, advance-px, gi)
 
 // Render a single codepoint at pixel size `size` placed so its
 // baseline anchors at (origin-x, origin-y). Returns the placed-glyph
@@ -53,22 +82,26 @@ pub struct placed-glyph
 pub fun render-glyph(info : font-info, codepoint : int, size : float64,
                      origin-x : int, origin-y : int, fg : int)
         : <div,exn> (placed-glyph, int, int)
-  val scale     = scale-for-pixel-height(info, size)
-  val gi        = find-glyph-index(info, codepoint)
-  val (advance-fu, _lsb) = get-glyph-h-metrics(info, gi)
-  val advance-px = (advance-fu.float64 * scale + 0.5).floor.int
-  val verts     = get-glyph-shape(info, gi)
-  val box       = get-glyph-box(info, gi)
-  val (ix0, iy0, ix1, iy1) = glyph-bitmap-box-from-box(box, scale, scale)
-  val w         = ix1 - ix0
-  val h         = iy1 - iy0
-  if w <= 0 || h <= 0 then
-    // Empty glyph (space, .notdef when missing). Empty bitmap, but
-    // we still advance by the hmtx amount so spaces work.
-    (Placed-glyph(0, 0, empty-bitmap, fg), advance-px, gi)
-  else
-    val bm = rasterize-shape(verts, w, h, scale, scale, 0.0, 0.0, ix0, iy0)
-    (Placed-glyph(origin-x + ix0, origin-y + iy0, bm, fg), advance-px, gi)
+  val (bm, ix0, iy0, advance-px, gi) = rasterise-glyph(info, codepoint, size)
+  (Placed-glyph(origin-x + ix0, origin-y + iy0, bm, fg), advance-px, gi)
+
+// Cache-consulting variant of `rasterise-glyph`. On hit, reuses
+// the alpha bitmap with no rasterisation work. On miss, rasterises,
+// stores, returns. `size-px` is the cache key — we round the float
+// pixel size to the nearest int because two neighbouring sub-pixel
+// sizes produce visually identical bitmaps at body sizes.
+pub fun rasterise-glyph-cached(cache : glyph-cache, font-name : string,
+                               info : font-info, codepoint : int, size : float64)
+        : <div, read<global>, write<global>, exn> (bitmap, int, int, int, int)
+  val size-px = size.floor.int
+  match cache-lookup(cache, font-name, codepoint, size-px)
+    Just(e) ->
+      val gi = find-glyph-index(info, codepoint)
+      (e.bm, e.ix0, e.iy0, e.advance, gi)
+    Nothing ->
+      val (bm, ix0, iy0, advance-px, gi) = rasterise-glyph(info, codepoint, size)
+      cache-store(cache, font-name, codepoint, size-px, bm, ix0, iy0, advance-px)
+      (bm, ix0, iy0, advance-px, gi)
 
 // Walk the codepoint list, threading pen position + previous glyph
 // index (the latter for kern-pair lookup). Returns the list of
@@ -133,6 +166,60 @@ pub fun render-string(info : font-info, s : string, size : float64,
         : <div> (list<placed-glyph>, int)
   val cps = s.list.map(fn(c) c.int)
   layout-loop(info, cps, size, origin-x, baseline-y, fg, 0, [])
+
+// --- cache-aware variant ---------------------------------------------------
+
+// Same as `render-string` but every per-glyph rasterisation goes
+// through `rasterise-glyph-cached`. Without the cache, repeated
+// page-composes on the same glyph set re-rasterise from scratch
+// (compose is a slow path because the page composer re-runs
+// whenever a new font registers — see `render.idle-cache-key`).
+// With the cache, only first-paint pays the rasterisation cost;
+// subsequent composes are list-walk speed.
+pub fun render-string-cached(cache : glyph-cache, font-name : string,
+                             info : font-info, s : string, size : float64,
+                             origin-x : int, baseline-y : int, fg : int)
+        : <div, read<global>, write<global>> (list<placed-glyph>, int)
+  val cps = s.list.map(fn(c) c.int)
+  layout-loop-cached(cache, font-name, info, cps, size,
+                     origin-x, baseline-y, fg, 0, [])
+
+fun layout-loop-cached(cache : glyph-cache, font-name : string,
+                       info : font-info, cps : list<int>, size : float64,
+                       pen-x : int, baseline-y : int, fg : int,
+                       prev-gi : int, acc : list<placed-glyph>)
+        : <div, read<global>, write<global>> (list<placed-glyph>, int)
+  match cps
+    Nil -> (acc.reverse, pen-x)
+    Cons(cp, rest) ->
+      match error/try({ render-glyph-with-kern-cached(cache, font-name, info, cp,
+                                                       size, pen-x, baseline-y, fg, prev-gi) })
+        Ok((pg, adv, gi, kern-px)) ->
+          layout-loop-cached(cache, font-name, info, rest, size,
+                             pen-x + adv + kern-px, baseline-y, fg, gi, Cons(pg, acc))
+        Error(_) ->
+          // Skip this glyph but still advance the pen by an em-quad
+          // so the rest of the line stays roughly positioned.
+          val scale = error/try({ scale-for-pixel-height(info, size) }).default(1.0)
+          val em-px = (1000.0 * scale).floor.int
+          val adv   = if em-px <= 0 then size.floor.int else em-px / 2
+          layout-loop-cached(cache, font-name, info, rest, size,
+                             pen-x + adv, baseline-y, fg, 0, acc)
+
+fun render-glyph-with-kern-cached(cache : glyph-cache, font-name : string,
+                                  info : font-info, codepoint : int, size : float64,
+                                  origin-x : int, baseline-y : int, fg : int,
+                                  prev-gi : int)
+        : <div, read<global>, write<global>, exn> (placed-glyph, int, int, int)
+  val scale = scale-for-pixel-height(info, size)
+  val gi = find-glyph-index(info, codepoint)
+  val kern-fu = if prev-gi == 0 then 0
+                else get-glyph-kern-advance(info, prev-gi, gi)
+  val kern-px = (kern-fu.float64 * scale + 0.5).floor.int
+  val (bm, ix0, iy0, advance-px, _gi) =
+    rasterise-glyph-cached(cache, font-name, info, codepoint, size)
+  val pg = Placed-glyph(origin-x + kern-px + ix0, baseline-y + iy0, bm, fg)
+  (pg, advance-px, gi, kern-px)
 
 // Measure a string without rendering: walk codepoints, sum advances.
 // Useful for centering / right-aligning before committing to a layout.
