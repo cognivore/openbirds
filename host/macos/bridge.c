@@ -175,6 +175,21 @@ void openbirds_load_gif(const uint8_t* bytes, int32_t len) {
     pthread_mutex_unlock(&g_lock);
 }
 
+// --- font loading (Stage 4b/typography) ------------------------------------
+//
+// Stub for now — the Koka-side font registry + stb_truetype glue
+// land in a follow-up commit. Until then we accept the bytes,
+// log the call so we can see the asset bundle plumbing works,
+// and otherwise no-op. Once the registry is in place, this body
+// hands the bytes off to a Koka extern that owns them for the
+// process lifetime.
+void openbirds_load_font(const char* name, const uint8_t* bytes, int32_t len) {
+    if (name == NULL || bytes == NULL || len <= 0) return;
+    fprintf(stderr, "[openbirds] load_font: name=%s len=%d (stubbed; renderer not wired yet)\n",
+            name, len);
+    fflush(stderr);
+}
+
 // --- pixel framebuffer ------------------------------------------------------
 //
 // Calls into Koka's `render::frame-rgba`, which returns a Koka

@@ -110,6 +110,10 @@ under `docs/notes/`. Read these before changing the affected area:
 - [`docs/notes/kklib-ios-fork.md`](docs/notes/kklib-ios-fork.md) —
   kklib's `os.c` doesn't compile for iOS; current workaround +
   upstream PR sketch
+- [`docs/notes/typography.md`](docs/notes/typography.md) —
+  TYP-SRS-001: five OFL typefaces (EB Garamond, Cormorant
+  Garamond, Jost\*, Terminal Grotesque, Terminus), one role each,
+  plus the implementation-status notes
 
 ## Stage map (where we are)
 

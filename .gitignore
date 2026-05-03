@@ -21,6 +21,11 @@ Package.resolved
 DerivedData/
 host/ios/Info.plist
 
+# Bundled font binaries — fetched into Resources/fonts/ by `just
+# fetch-fonts` from upstream OFL sources (see docs/notes/typography.md).
+# Not committed; regenerable.
+host/ios/Resources/fonts/
+
 # macOS
 .DS_Store
 

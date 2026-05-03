@@ -34,6 +34,8 @@ import pixel
 import framebuffer
 import runtime
 import scene
+import font
+import text
 
 // --- fallback test pattern (no GIF loaded) -----------------------------------
 
@@ -81,34 +83,53 @@ fun gif-pixel-at(f : decoded-frame, x : pixel-x, y : pixel-y, w : width, h : hei
 
 // --- close-button overlay ---------------------------------------------------
 //
-// A dark bar across the bottom 15% of the screen with a centered
-// X glyph. The geometry comes from `scene/button-rect` so input
-// hit-testing and rendering agree on where the button is.
+// A dark bar across the bottom 15% of the screen carrying the
+// word "CLOSE" centred horizontally + vertically. The bar
+// geometry comes from `scene/button-rect` so input hit-testing
+// and rendering agree on where the button is.
+//
+// The label is rendered with `font/mono5x7` (the placeholder
+// for Terminus until the TTF rasterizer lands — see
+// docs/notes/typography.md). Cell scale is chosen so the glyphs
+// occupy ~50% of the bar's height with comfortable padding.
 
-val button-bg : int    = 184549375    // 0x0AFF — packed (10,10,10,255)
-val button-fg : int    = 4294967295   // 0xFFFFFFFF — packed (255,255,255,255)
-val stroke-half : int  = 1            // ~3px thick X stroke
-
-// Pack the button's background colour explicitly (literal above is
-// just a sanity check; this is what we actually use).
 val button-bg-rgba : int = pack-rgba(20, 20, 20, 255)
 val button-fg-rgba : int = pack-rgba(255, 255, 255, 255)
+val close-label    : string = "CLOSE"
 
 fun in-button(x : int, y : int, w : int, h : int) : bool
   val (bx0, by0, bx1, by1) = button-rect(w, h)
   x >= bx0 && x <= bx1 && y >= by0 && y <= by1
 
-fun button-pixel(x : int, y : int, w : int, h : int) : int
+// Build the layout for the centred "CLOSE" label inside the
+// button rect. Scale is the largest integer that keeps the text
+// within ~80% of the bar's width AND ~60% of its height.
+fun close-layout(w : int, h : int) : text-render
   val (bx0, by0, bx1, by1) = button-rect(w, h)
-  val cx  = (bx0 + bx1) / 2
-  val cy  = (by0 + by1) / 2
-  val arm = (by1 - by0) / 3
-  val dx  = x - cx
-  val dy  = y - cy
-  if dx.abs > arm || dy.abs > arm then button-bg-rgba
-  elif (dx + dy).abs <= stroke-half || (dx - dy).abs <= stroke-half
-    then button-fg-rgba
-  else button-bg-rgba
+  val bar-w   = bx1 - bx0 + 1
+  val bar-h   = by1 - by0 + 1
+  // Per-glyph advance is 6 cells wide; "CLOSE" = 5 chars → text
+  // is 5*6 - (6-5) = 29 source pixels wide, 7 source pixels tall.
+  val raw-w     = text-width-unscaled(mono5x7, close-label.count)
+  val raw-h     = mono5x7.cell-h
+  val max-by-w  = (bar-w * 80 / 100) / raw-w
+  val max-by-h  = (bar-h * 60 / 100) / raw-h
+  val scale     = if max-by-w < max-by-h then max-by-w else max-by-h
+  val s         = if scale < 1 then 1 else scale
+  val text-w    = raw-w * s
+  val text-h    = raw-h * s
+  val origin-x  = bx0 + (bar-w - text-w) / 2
+  val origin-y  = by0 + (bar-h - text-h) / 2
+  mk-text(mono5x7, close-label, origin-x, origin-y, s,
+          button-fg-rgba, button-bg-rgba)
+
+// Per-pixel: inside the button bar, return the close-label glyph
+// pixel (or the bar background). The caller passes a pre-built
+// text-render so we don't reallocate per pixel.
+fun button-pixel(t : text-render, x : int, y : int) : int
+  match text-pixel(t, x, y)
+    Just(c) -> c
+    Nothing -> button-bg-rgba
 
 // Per-pixel render of one decoded frame at the given output size.
 // `vector-init-total` dispatches to kklib's `kk_vector_init_total`
@@ -159,8 +180,9 @@ fun render-idle(s : session, w : width, h : height, w-px : int, h-px : int)
 fun render-idle-pixels(w : width, h : height) : vector<int>
   val cw = w.pixels
   val ch = h.pixels
+  val label = close-layout(cw, ch)
   build-pixels(w, h) fn(x, y)
-    if in-button(x.col, y.row, cw, ch) then button-pixel(x.col, y.row, cw, ch)
+    if in-button(x.col, y.row, cw, ch) then button-pixel(label, x.col, y.row)
     else 255         // 0x000000FF — opaque black
 
 fun render-playing(s : session, now : float64,

@@ -50,6 +50,17 @@ void openbirds_render_frame(double now_seconds,
 // if the caller needs to free it. `len` is the number of bytes.
 void openbirds_load_gif(const uint8_t* bytes, int32_t len);
 
+// --- font loading (Stage 4b/typography) ------------------------------------
+//
+// Hand the Koka brain a TrueType font's bytes plus the logical
+// name it should be addressed by ("Terminus", "EBGaramond",
+// "Jost", "CormorantGaramond", "TerminalGrotesque"). Koka caches
+// the parsed-font handle in a process-lifetime registry; the
+// renderer looks up by name when laying out glyphs.
+//
+// `bytes` is borrowed during this call only.
+void openbirds_load_font(const char* name, const uint8_t* bytes, int32_t len);
+
 // --- input + lifecycle (Stage 4a/close-button) -----------------------------
 //
 // Tap input from Swift. (x, y) is in framebuffer-pixel coordinates

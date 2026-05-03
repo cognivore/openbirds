@@ -5,11 +5,12 @@
 // to draw, what touches mean, and when to exit is in Koka.
 //
 // Per-frame loop: TimelineView ticks at the display refresh; we ask
-// Koka for the RGBA bytes for the current absolute time, wrap them
-// in a CGImage, hand it to a SwiftUI Image with `.interpolation(.none)`
-// for crisp pixel-art scaling. Each tick we also poll
-// `openbirds_should_exit()` — once the brain says "exit", we call
-// `exit(0)`.
+// Koka for the RGBA bytes for the current absolute time at the
+// CURRENT VIEWPORT SIZE (read from GeometryReader; re-evaluated on
+// rotation, split-view, etc.), wrap them in a CGImage, hand it to
+// a SwiftUI Image with `.interpolation(.none)` so the framebuffer
+// IS the canvas. No fixed internal resolution — Koka renders at
+// whatever pixel count the device gives us.
 //
 // Stage 4+ swaps the CGImage path for a MetalKit view backed by an
 // MTLTexture. The Koka-facing FFI does not change.
@@ -29,16 +30,45 @@ struct OpenbirdsApp: App {
         // unresponsive-launch watchdog. The bridge serialises Koka
         // calls with a mutex; render uses trylock so it stays smooth
         // (showing a placeholder) while load runs.
-        guard let url = Bundle.main.url(forResource: "lucile", withExtension: "gif"),
-              let data = try? Data(contentsOf: url) else {
-            return
-        }
-        DispatchQueue.global(qos: .userInitiated).async {
-            data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-                guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
-                openbirds_load_gif(base, Int32(data.count))
+        if let url = Bundle.main.url(forResource: "lucile", withExtension: "gif"),
+           let data = try? Data(contentsOf: url) {
+            DispatchQueue.global(qos: .userInitiated).async {
+                data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                    guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+                    openbirds_load_gif(base, Int32(data.count))
+                }
             }
         }
+        // Same pattern for any TTF font bundled in Resources/. We
+        // ship them via a tiny manifest so adding new typefaces is
+        // a one-line change at the call site.
+        loadBundledFont(name: "Terminus", file: "TerminusTTF-Bold-Nerd-Font-Complete.ttf",
+                        fallbacks: ["TerminusTTF.ttf", "Terminus.ttf"])
+        loadBundledFont(name: "EBGaramond", file: "EBGaramond-Regular.ttf",
+                        fallbacks: [])
+        loadBundledFont(name: "Jost", file: "Jost-Medium.ttf",
+                        fallbacks: ["Jost-VariableFont_wght.ttf"])
+    }
+
+    private func loadBundledFont(name: String, file: String, fallbacks: [String]) {
+        let candidates = [file] + fallbacks
+        for cand in candidates {
+            let stem = (cand as NSString).deletingPathExtension
+            let ext  = (cand as NSString).pathExtension
+            if let url = Bundle.main.url(forResource: stem, withExtension: ext),
+               let data = try? Data(contentsOf: url) {
+                DispatchQueue.global(qos: .userInitiated).async {
+                    data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                        guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+                        name.withCString { cname in
+                            openbirds_load_font(cname, base, Int32(data.count))
+                        }
+                    }
+                }
+                return
+            }
+        }
+        NSLog("openbirds.font: couldn't find any of \(candidates) for \(name); skipping.")
     }
 
     var body: some Scene {
@@ -51,91 +81,60 @@ struct OpenbirdsApp: App {
 }
 
 struct FramebufferView: View {
-    // Internal render resolution. Pixel art is small by design; the
-    // Image's `.interpolation(.none)` upscales nearest-neighbour to
-    // the device's actual pixel count.
-    private static let renderWidth:  Int32 = 256
-    private static let renderHeight: Int32 = 256
+    static let startTime = CFAbsoluteTimeGetCurrent()
 
-    private static let startTime = CFAbsoluteTimeGetCurrent()
+    // Pixel-density scale: how many framebuffer pixels per logical
+    // point. 1.0 keeps the brain rendering at logical-point
+    // resolution and lets iOS upscale 3× nearest-neighbour for the
+    // pixel-art look. Bumping to 2 or 3 trades CPU for sharper
+    // typography (text strokes get the device's native dpi).
+    private static let pixelScale: CGFloat = 1.0
 
     var body: some View {
-        // GeometryReader lets us know the actual displayed size of
-        // the Image so taps can be mapped from view-pixel space
-        // back to framebuffer-pixel space (renderWidth ×
-        // renderHeight).
-        //
-        // Tap-capture is a `Color.black.opacity(0.001)` overlay
-        // pinned to fill the entire geometry and stamped with
-        // `.contentShape`. A literal `Color.clear` collapses out
-        // of hit-testing in some SwiftUI layouts; a near-zero
-        // alpha keeps the view in the rendering tree without
-        // visibly altering the framebuffer.
         GeometryReader { geo in
+            let fbW = max(Int32(geo.size.width  * Self.pixelScale), 1)
+            let fbH = max(Int32(geo.size.height * Self.pixelScale), 1)
             ZStack {
                 TimelineView(.animation) { _ in
                     let now = CFAbsoluteTimeGetCurrent() - Self.startTime
-                    if let img = renderFrame(now: now) {
+                    if let img = renderFrame(now: now, w: fbW, h: fbH) {
                         Image(decorative: img, scale: 1.0, orientation: .up)
                             .resizable()
                             .interpolation(.none)
-                            .aspectRatio(contentMode: .fit)
                     } else {
                         Color.red
                     }
-                    // Per-tick exit poll. Cheap — single mutex + a
-                    // ref read on the Koka side.
                     let _ = pollExit()
                 }
                 Color.black.opacity(0.001)
                     .frame(width: geo.size.width, height: geo.size.height)
                     .contentShape(Rectangle())
                     .onTapGesture(coordinateSpace: .local) { location in
-                        handleTap(at: location, in: geo.size)
+                        handleTap(at: location, fbW: fbW, fbH: fbH, container: geo.size)
                     }
             }
             .frame(width: geo.size.width, height: geo.size.height)
         }
     }
 
-    private func handleTap(at point: CGPoint, in containerSize: CGSize) {
+    // The Image fills the GeometryReader 1:1 (no aspect-fit
+    // letterboxing now that the framebuffer matches the viewport),
+    // so the tap → framebuffer mapping is just a uniform scale.
+    private func handleTap(at point: CGPoint, fbW: Int32, fbH: Int32, container: CGSize) {
         let now = CFAbsoluteTimeGetCurrent() - Self.startTime
-        guard let mapped = mapToFramebuffer(point: point, container: containerSize) else {
-            NSLog("openbirds.tap: out-of-bounds at (%.1f, %.1f) in %.0fx%.0f",
-                  point.x, point.y, containerSize.width, containerSize.height)
+        let fx = Int(point.x * CGFloat(fbW) / container.width)
+        let fy = Int(point.y * CGFloat(fbH) / container.height)
+        if fx < 0 || fy < 0 || fx >= Int(fbW) || fy >= Int(fbH) {
+            NSLog("openbirds.tap: oob (%.1f,%.1f) in %.0fx%.0f → fb=(%d,%d)",
+                  point.x, point.y, container.width, container.height, fx, fy)
             return
         }
-        NSLog("openbirds.tap: container=(%.0f,%.0f) point=(%.1f,%.1f) → fb=(%d,%d) now=%.3f",
-              containerSize.width, containerSize.height,
-              point.x, point.y, mapped.x, mapped.y, now)
-        openbirds_tap(Int32(mapped.x), Int32(mapped.y),
-                      Self.renderWidth, Self.renderHeight, now)
+        NSLog("openbirds.tap: container=(%.0f,%.0f) point=(%.1f,%.1f) → fb=(%d,%d)/%dx%d now=%.3f",
+              container.width, container.height,
+              point.x, point.y, fx, fy, fbW, fbH, now)
+        openbirds_tap(Int32(fx), Int32(fy), fbW, fbH, now)
     }
 
-    // The Image is `.aspectRatio(.fit)` so it's centered with
-    // letterboxing if the container's aspect doesn't match the
-    // framebuffer's. Reverse the transform here.
-    private func mapToFramebuffer(point: CGPoint, container: CGSize) -> (x: Int, y: Int)? {
-        let fbW = CGFloat(Self.renderWidth)
-        let fbH = CGFloat(Self.renderHeight)
-        let scale  = min(container.width / fbW, container.height / fbH)
-        let drawnW = fbW * scale
-        let drawnH = fbH * scale
-        let originX = (container.width  - drawnW) / 2
-        let originY = (container.height - drawnH) / 2
-        let lx = point.x - originX
-        let ly = point.y - originY
-        if lx < 0 || ly < 0 || lx >= drawnW || ly >= drawnH { return nil }
-        let fx = Int(lx / scale)
-        let fy = Int(ly / scale)
-        return (fx, fy)
-    }
-
-    // Each frame, ask Koka if it wants the app to exit. Once it
-    // says yes, we exit(0). iOS prefers user-driven termination,
-    // but openbirds is explicitly designed around a single
-    // user-tapped close button; the brain owning that decision is
-    // the whole point.
     private func pollExit() -> Bool {
         let now = CFAbsoluteTimeGetCurrent() - Self.startTime
         if openbirds_should_exit(now) != 0 {
@@ -144,9 +143,7 @@ struct FramebufferView: View {
         return false
     }
 
-    private func renderFrame(now: TimeInterval) -> CGImage? {
-        let w = Self.renderWidth
-        let h = Self.renderHeight
+    private func renderFrame(now: TimeInterval, w: Int32, h: Int32) -> CGImage? {
         let byteCount = Int(w) * Int(h) * 4
         var buf = [UInt8](repeating: 0, count: byteCount)
         buf.withUnsafeMutableBufferPointer { ptr in
