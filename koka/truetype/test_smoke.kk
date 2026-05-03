@@ -69,6 +69,7 @@ import truetype/cmap
 import truetype/outline
 import truetype/metrics
 import truetype/raster
+import truetype/raster_v2
 
 extern import
   c file "test_smoke_io.c"
@@ -134,7 +135,10 @@ pub fun main() : io ()
       val h          = iy1 - iy0
       println("test_smoke: bitmap " ++ w.show ++ "x" ++ h.show ++
               " offset (" ++ ix0.show ++ ", " ++ iy0.show ++ ")")
-      val bm         = rasterize-shape(verts, w, h, scale, scale, 0.0, 0.0, ix0, iy0)
-      println("---")
-      print-bitmap(bm, 0)
+      val bm-v1      = rasterize-shape(verts, w, h, scale, scale, 0.0, 0.0, ix0, iy0)
+      val bm-v2      = rasterize-shape-v2(verts, w, h, scale, scale, 0.0, 0.0, ix0, iy0)
+      println("--- v1 (4× supersample) ---")
+      print-bitmap(bm-v1, 0)
+      println("--- v2 (analytic coverage) ---")
+      print-bitmap(bm-v2, 0)
       println("---")
