@@ -85,53 +85,18 @@ fun gif-pixel-at(f : decoded-frame, x : pixel-x, y : pixel-y, w : width, h : hei
 
 // --- close-button overlay ---------------------------------------------------
 //
-// A dark bar across the bottom 15% of the screen carrying the
-// word "CLOSE" centred horizontally + vertically. The bar
-// geometry comes from `scene/button-rect` so input hit-testing
-// and rendering agree on where the button is.
-//
-// The label is rendered with `font/mono5x7` (the placeholder
-// for Terminus until the TTF rasterizer lands — see
-// docs/notes/typography.md). Cell scale is chosen so the glyphs
-// occupy ~50% of the bar's height with comfortable padding.
+// The close button occupies the bottom 15% of the screen. Its
+// label "CLOSE" is composed by `typography_page.layout` (in
+// Terminal Grotesque per TYP-SRS-001 §4.4) so it goes through the
+// same alpha-buffer blit as every other piece of text on the
+// page. Render only owns the bar's *background* fill; the
+// foreground arrives via `page-pixel`.
 
 val button-bg-rgba : int = pack-rgba(20, 20, 20, 255)
-val button-fg-rgba : int = pack-rgba(255, 255, 255, 255)
-val close-label    : string = "CLOSE"
 
 fun in-button(x : int, y : int, w : int, h : int) : bool
   val (bx0, by0, bx1, by1) = button-rect(w, h)
   x >= bx0 && x <= bx1 && y >= by0 && y <= by1
-
-// Build the layout for the centred "CLOSE" label inside the
-// button rect. Scale is the largest integer that keeps the text
-// within ~80% of the bar's width AND ~60% of its height.
-fun close-layout(w : int, h : int) : text-render
-  val (bx0, by0, bx1, by1) = button-rect(w, h)
-  val bar-w   = bx1 - bx0 + 1
-  val bar-h   = by1 - by0 + 1
-  // Per-glyph advance is 6 cells wide; "CLOSE" = 5 chars → text
-  // is 5*6 - (6-5) = 29 source pixels wide, 7 source pixels tall.
-  val raw-w     = text-width-unscaled(mono5x7, close-label.count)
-  val raw-h     = mono5x7.cell-h
-  val max-by-w  = (bar-w * 80 / 100) / raw-w
-  val max-by-h  = (bar-h * 60 / 100) / raw-h
-  val scale     = if max-by-w < max-by-h then max-by-w else max-by-h
-  val s         = if scale < 1 then 1 else scale
-  val text-w    = raw-w * s
-  val text-h    = raw-h * s
-  val origin-x  = bx0 + (bar-w - text-w) / 2
-  val origin-y  = by0 + (bar-h - text-h) / 2
-  mk-text(mono5x7, close-label, origin-x, origin-y, s,
-          button-fg-rgba, button-bg-rgba)
-
-// Per-pixel: inside the button bar, return the close-label glyph
-// pixel (or the bar background). The caller passes a pre-built
-// text-render so we don't reallocate per pixel.
-fun button-pixel(t : text-render, x : int, y : int) : int
-  match text-pixel(t, x, y)
-    Just(c) -> c
-    Nothing -> button-bg-rgba
 
 // Per-pixel render of one decoded frame at the given output size.
 // `vector-init-total` dispatches to kklib's `kk_vector_init_total`
@@ -186,10 +151,9 @@ fun render-idle(s : session, fonts : font-registry,
 fun render-idle-pixels(page : rendered-page, w : width, h : height) : vector<int>
   val cw = w.pixels
   val ch = h.pixels
-  val label = close-layout(cw, ch)
   build-pixels(w, h) fn(x, y)
-    if in-button(x.col, y.row, cw, ch) then button-pixel(label, x.col, y.row)
-    else page-pixel(page, x.col, y.row, 255)   // 0x000000FF black background
+    val bg = if in-button(x.col, y.row, cw, ch) then button-bg-rgba else 255
+    page-pixel(page, x.col, y.row, bg)
 
 fun render-playing(s : session, now : float64,
                    w : width, h : height, w-px : int, h-px : int)

@@ -82,6 +82,53 @@ pub fun get-glyph-h-metrics(info : font-info, glyph-index : int) : <div,exn> (in
     (i16(data, info.hmtx + 4 * (n-long - 1)),
      i16(data, info.hmtx + 4 * n-long + 2 * (glyph-index - n-long)))
 
+// --- kerning ---------------------------------------------------------------
+
+// Kern advance for a (left, right) glyph pair, in design units.
+// Returns 0 if the font has no kern table, no format-0 subtable, or
+// no entry for this pair.
+//
+// Direct port of `stbtt__GetGlyphKernInfoAdvance` (stb_truetype.h
+// v1.26 lines 2359-2387). Only the legacy `kern` table is supported
+// (format 0, horizontal); GPOS would be a separate port.
+//
+// Layout of the kern table at info.kern:
+//   uint16 version
+//   uint16 nTables
+//   subtable[0]:
+//     uint16 subtable-version
+//     uint16 length
+//     uint16 coverage   (format << 8 | flags; we expect 0x0001
+//                        = horizontal + format 0)
+//     uint16 nPairs
+//     uint16 searchRange / entrySelector / rangeShift   (ignored)
+//     pair[nPairs]:
+//       uint16 leftGlyph
+//       uint16 rightGlyph
+//       int16  advanceAdjustment
+//
+// Pairs are sorted lexicographically (left, right). stb does a
+// binary search reading both glyph indices as a single big-endian
+// uint32 and compares against `needle = (left << 16) | right`.
+// Same trick here.
+pub fun get-glyph-kern-advance(info : font-info, glyph1 : int, glyph2 : int) : <div,exn> int
+  if info.kern == 0 then 0
+  elif u16(info.data, info.kern + 2) < 1 then 0
+  elif u16(info.data, info.kern + 8) != 1 then 0
+  else
+    val n-pairs = u16(info.data, info.kern + 10)
+    val needle  = glyph1 * 65536 + glyph2
+    kern-search(info.data, info.kern, 0, n-pairs - 1, needle)
+
+fun kern-search(data : bytes, k : int, lo : int, hi : int, needle : int) : <div,exn> int
+  if lo > hi then 0
+  else
+    val m = (lo + hi) / 2
+    val straw = u32(data, k + 18 + m * 6)
+    if needle < straw then kern-search(data, k, lo, m - 1, needle)
+    elif needle > straw then kern-search(data, k, m + 1, hi, needle)
+    else i16(data, k + 22 + m * 6)
+
 // --- bitmap bounding box ---------------------------------------------------
 
 // Helper: integer floor for float64. Koka's std/num/float64 floor

@@ -167,12 +167,32 @@ fun layout(w : int, h : int) : list<run>
   val resume-y = pull-y + 1 * pull-step + hpct(58)
   val r-r1 = Run("Thus, we are liberating it.",    "EBGaramond", body-sz, left, resume-y, ink-rgba)
 
+  // CLOSE button label, centred in the bottom 15% of the viewport.
+  // The button background bar is painted by render.kk; the label is
+  // composed into the same (alpha, rgba) page so it goes through
+  // the unified blit. Per TYP-SRS-001 §4.4 the chrome face is
+  // Terminal Grotesque.
+  val close-bar-h    = h - (h * 85 / 100)        // bottom 15% in logical px
+  val close-bar-y0   = h - close-bar-h
+  val close-sz       = (close-bar-h * 50) / 100  // 50% of bar height
+  // Centring math: stb's per-glyph advance width is the total run
+  // width ≈ N * size * 0.5 for chrome faces. Approximate it; the
+  // visual centring is forgiving, and we don't have access to the
+  // measured width without a registry round-trip here.
+  val close-est-w    = close-sz * 4                // "CLOSE" ≈ 4 char-widths
+  val close-x        = (w - close-est-w) / 2
+  // Vertical: baseline ≈ y0 + bar-h * 0.7, so glyphs cap-rise to ~y0+10%
+  val close-y        = close-bar-y0 + (close-bar-h * 7) / 10
+  val r-bottom-close = Run("CLOSE", "TerminalGrotesque", close-sz,
+                           close-x, close-y, ink-rgba)
+
   [ r-menu, r-main, r-close,
     r-h1, r-h2,
     r-b1, r-b2, r-b3, r-b4,
     r-c1, r-c2,
     r-p1, r-p2,
-    r-r1 ]
+    r-r1,
+    r-bottom-close ]
 
 // --- composition ---------------------------------------------------------
 
