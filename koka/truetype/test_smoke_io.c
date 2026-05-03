@@ -7,6 +7,16 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
+
+// Wall-clock seconds for benchmarking. clock_gettime over CLOCK_MONOTONIC
+// is the right thing on macOS / Linux for elapsed-time deltas.
+static double openbirds_truetype_now_s(kk_context_t* ctx) {
+    (void)ctx;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1.0e9;
+}
 
 static kk_vector_t openbirds_truetype_read_file(kk_string_t path_k, kk_context_t* ctx) {
     const char* path = kk_string_cbuf_borrow(path_k, NULL, ctx);

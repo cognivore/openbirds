@@ -292,6 +292,23 @@ test-truetype-smoke: build-truetype-smoke
     [ -f "$FONT" ] || { echo "missing: $FONT" >&2; exit 1; }; \
     ./build/test-smoke "$FONT" 97 20
 
+# Benchmark `compose-page` with vs. without the glyph cache.
+# Loads the 5 OFL fonts from host/ios/Resources/, renders the
+# typography page N times each in cached / uncached configurations,
+# prints per-iteration wall-clock and the speedup ratio.
+build-bench-compose:
+    mkdir -p build
+    koka -O2 --target=c \
+      --include=koka \
+      --builddir=build/.koka-bench \
+      -o build/bench-compose \
+      koka/truetype/bench_compose.kk
+    chmod +x build/bench-compose
+    @echo "built: ./build/bench-compose <font-dir> [iters=5]"
+
+bench-compose: build-bench-compose
+    ./build/bench-compose host/ios/Resources 10
+
 # --- Hygiene ----------------------------------------------------------------
 
 clean:
