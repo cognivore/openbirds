@@ -52,7 +52,8 @@ pub struct placed-glyph
 // Empty glyph (space, .notdef when font is missing the codepoint)
 // returns `empty-bitmap` plus the hmtx advance — callers still get
 // a width to advance the pen by.
-pub fun rasterise-glyph(info : font-info, codepoint : int, size : float64)
+pub fun rasterise-glyph(info : font-info, codepoint : int, size : float64,
+                        shift-x : float64, shift-y : float64)
         : <div,exn> (bitmap, int, int, int, int)
   val scale     = scale-for-pixel-height(info, size)
   val gi        = find-glyph-index(info, codepoint)
@@ -66,7 +67,7 @@ pub fun rasterise-glyph(info : font-info, codepoint : int, size : float64)
   if w <= 0 || h <= 0 then
     (empty-bitmap, 0, 0, advance-px, gi)
   else
-    val bm = rasterize-shape(verts, w, h, scale, scale, 0.0, 0.0, ix0, iy0)
+    val bm = rasterize-shape(verts, w, h, scale, scale, shift-x, shift-y, ix0, iy0)
     (bm, ix0, iy0, advance-px, gi)
 
 // Render a single codepoint at pixel size `size` placed so its
@@ -82,7 +83,7 @@ pub fun rasterise-glyph(info : font-info, codepoint : int, size : float64)
 pub fun render-glyph(info : font-info, codepoint : int, size : float64,
                      origin-x : int, origin-y : int, fg : int)
         : <div,exn> (placed-glyph, int, int)
-  val (bm, ix0, iy0, advance-px, gi) = rasterise-glyph(info, codepoint, size)
+  val (bm, ix0, iy0, advance-px, gi) = rasterise-glyph(info, codepoint, size, 0.0, 0.0)
   (Placed-glyph(origin-x + ix0, origin-y + iy0, bm, fg), advance-px, gi)
 
 // Cache-consulting variant of `rasterise-glyph`. On hit, reuses
@@ -91,16 +92,25 @@ pub fun render-glyph(info : font-info, codepoint : int, size : float64,
 // pixel size to the nearest int because two neighbouring sub-pixel
 // sizes produce visually identical bitmaps at body sizes.
 pub fun rasterise-glyph-cached(cache : glyph-cache, font-name : string,
-                               info : font-info, codepoint : int, size : float64)
+                               info : font-info, codepoint : int, size : float64,
+                               shift-x : float64, shift-y : float64)
         : <div, read<global>, write<global>, exn> (bitmap, int, int, int, int)
   val size-px = size.floor.int
-  match cache-lookup(cache, font-name, codepoint, size-px)
+  val sbx     = shift-bin(shift-x)
+  val sby     = shift-bin(shift-y)
+  match cache-lookup(cache, font-name, codepoint, size-px, sbx, sby)
     Just(e) ->
       val gi = find-glyph-index(info, codepoint)
       (e.bm, e.ix0, e.iy0, e.advance, gi)
     Nothing ->
-      val (bm, ix0, iy0, advance-px, gi) = rasterise-glyph(info, codepoint, size)
-      cache-store(cache, font-name, codepoint, size-px, bm, ix0, iy0, advance-px)
+      // Re-quantise shift to bin centre so the cached bitmap is
+      // reproducible on cache rehit (otherwise tiny float drift in
+      // shift-x would produce a hit-and-miss pattern across calls).
+      val sx = sbx.float64 / 4.0
+      val sy = sby.float64 / 4.0
+      val (bm, ix0, iy0, advance-px, gi) = rasterise-glyph(info, codepoint, size, sx, sy)
+      cache-store(cache, font-name, codepoint, size-px, sbx, sby,
+                  bm, ix0, iy0, advance-px)
       (bm, ix0, iy0, advance-px, gi)
 
 // Walk the codepoint list, threading pen position + previous glyph
@@ -217,7 +227,7 @@ fun render-glyph-with-kern-cached(cache : glyph-cache, font-name : string,
                 else get-glyph-kern-advance(info, prev-gi, gi)
   val kern-px = (kern-fu.float64 * scale + 0.5).floor.int
   val (bm, ix0, iy0, advance-px, _gi) =
-    rasterise-glyph-cached(cache, font-name, info, codepoint, size)
+    rasterise-glyph-cached(cache, font-name, info, codepoint, size, 0.0, 0.0)
   val pg = Placed-glyph(origin-x + kern-px + ix0, baseline-y + iy0, bm, fg)
   (pg, advance-px, gi, kern-px)
 
