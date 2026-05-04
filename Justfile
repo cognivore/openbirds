@@ -292,6 +292,46 @@ test-truetype-smoke: build-truetype-smoke
     [ -f "$FONT" ] || { echo "missing: $FONT" >&2; exit 1; }; \
     ./build/test-smoke "$FONT" 97 20
 
+# Build the SDF generation smoke test: loads a TTF, builds an SDF
+# for one codepoint via the pure-Koka stb_truetype port, prints
+# (a) the raw distance field as ASCII, (b) the smoothstep-
+# reconstructed alpha at 1:1, (c) a 2× upscaled sample to verify
+# the SDF stays sharp under zoom.
+build-sdf-smoke:
+    mkdir -p build
+    cd koka && koka -O2 --target=c \
+      --builddir=../build/.koka-sdf-smoke \
+      -o ../build/test-sdf-smoke \
+      truetype/test_sdf_smoke.kk
+    chmod +x build/test-sdf-smoke
+    @echo "built: ./build/test-sdf-smoke <ttf-path> [codepoint=97] [size=20] [padding=4]"
+
+# Run the SDF smoke against DejaVu Sans Bold.
+test-sdf-smoke: build-sdf-smoke
+    DEJAVU=$(nix eval --impure --raw --expr 'with (import <nixpkgs> {}); dejavu_fonts.outPath'); \
+    FONT="$DEJAVU/share/fonts/truetype/DejaVuSans-Bold.ttf"; \
+    [ -f "$FONT" ] || { echo "missing: $FONT" >&2; exit 1; }; \
+    ./build/test-sdf-smoke "$FONT" 97 20 4
+
+# Build the SDF-vs-alpha-raster benchmark: rasterizes the lowercase
+# alphabet through three paths (v1 alpha, SDF+1:1, SDF+2×), reports
+# wall-clock per glyph and per output pixel.
+build-bench-sdf:
+    mkdir -p build
+    cd koka && koka -O2 --target=c \
+      --builddir=../build/.koka-bench-sdf \
+      -o ../build/bench-sdf \
+      truetype/bench_sdf.kk
+    chmod +x build/bench-sdf
+    @echo "built: ./build/bench-sdf <ttf-path> [size=32] [padding=4] [iters=3]"
+
+# Run the SDF benchmark against DejaVu Sans Bold at body size 32.
+bench-sdf: build-bench-sdf
+    DEJAVU=$(nix eval --impure --raw --expr 'with (import <nixpkgs> {}); dejavu_fonts.outPath'); \
+    FONT="$DEJAVU/share/fonts/truetype/DejaVuSans-Bold.ttf"; \
+    [ -f "$FONT" ] || { echo "missing: $FONT" >&2; exit 1; }; \
+    ./build/bench-sdf "$FONT" 32 4 3
+
 # Benchmark `compose-page` with vs. without the glyph cache.
 # Loads the 5 OFL fonts from host/ios/Resources/, renders the
 # typography page N times each in cached / uncached configurations,
