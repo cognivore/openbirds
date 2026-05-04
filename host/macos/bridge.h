@@ -45,11 +45,17 @@ void        openbirds_free(const char* s);
 // on iOS, 0 if unknown / not rounded). Layout code can ask Koka
 // "is this pixel inside the rounded screen silhouette" without
 // having to know the geometry.
+// `density` is framebuffer-pixels per logical (perceptual) point —
+// the same `pixelScale` Swift uses to size the framebuffer. Koka
+// uses it to scale logical-unit constants (velocity floor, scrollbar
+// hit-zones, finger-comfort thresholds) onto the pixel grid. 1.0
+// for non-Retina, 3.0 for @3x iPhone, etc. Must be > 0.
 void openbirds_render_frame(double now_seconds,
                             int32_t width_px, int32_t height_px,
                             int32_t safe_top, int32_t safe_leading,
                             int32_t safe_trailing, int32_t safe_bottom,
                             int32_t corner_radius_px,
+                            double density,
                             uint8_t* out_buffer);
 
 // --- GIF loading (Stage 3c/Lucile) ----------------------------------------

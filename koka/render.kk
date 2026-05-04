@@ -80,12 +80,14 @@ pub fun set-spec(c : spec-cell,
                  w : int, h : int,
                  safe-top : int, safe-leading : int,
                  safe-trailing : int, safe-bottom : int,
-                 corner-radius : int)
+                 corner-radius : int,
+                 density : float64)
         : <read<global>, write<global>> ()
   c := Viewport-spec(
     Viewport(w, h),
     Insets(safe-top, safe-leading, safe-trailing, safe-bottom),
-    uniform-rounding(corner-radius)
+    uniform-rounding(corner-radius),
+    if density <= 0.0 then 1.0 else density
   )
 
 pub fun get-spec(c : spec-cell) : <read<global>> viewport-spec
@@ -104,6 +106,29 @@ pub fun cached-close-rect(pc : page-cache) : <read<global>> (int, int, int, int)
   match !pc
     Just(cp) -> cp.page.close-rect
     Nothing  -> (0, 0, 0, 0)
+
+// Bridge diagnostic: one-line summary of where the tap landed
+// relative to what's actually cached. Returns a single string so
+// the bridge can log it without unpacking a 6-tuple across the FFI.
+pub fun tap-debug-line(sr : scroll-cell, pc : page-cache, spec : spec-cell,
+                       vx : int, vy : int) : <read<global>> string
+  val vs   = get-spec(spec)
+  val sy   = get-scroll-y(sr)
+  val (xx0, xy0, xx1, xy1) = cached-x-rect(pc)
+  val (cx0, cy0, cx1, cy1) = cached-close-rect(pc)
+  val ch   = match !pc
+    Just(cp) -> cp.page.content-h
+    Nothing  -> 0
+  val cy   = vy + sy
+  val on   = is-on-screen(vs, vx, vy)
+  "vp=" ++ vs.vp.width.show ++ "x" ++ vs.vp.height.show ++
+    " on-screen=" ++ on.show ++
+    " content-h=" ++ ch.show ++
+    " scroll-y=" ++ sy.show ++
+    " tap-vp=(" ++ vx.show ++ "," ++ vy.show ++ ")" ++
+    " tap-content-y=" ++ cy.show ++
+    " x-rect=(" ++ xx0.show ++ "," ++ xy0.show ++ "," ++ xx1.show ++ "," ++ xy1.show ++ ")" ++
+    " close-rect=(" ++ cx0.show ++ "," ++ cy0.show ++ "," ++ cx1.show ++ "," ++ cy1.show ++ ")"
 
 // Tap dispatcher: viewport tap (x, vy) + current scroll-y →
 // handle-tap-on-rects with the cached close-rects in CONTENT
@@ -266,7 +291,7 @@ fun render-idle(fonts : font-registry, gc : glyph-cache,
       val fresh = compose-scrollable-page(fonts, gc, vs)
       pc := Just(Cached-page(nfonts, vs, fresh))
       fresh
-  scroll/tick(sr, now, sp.content-h, vs.vp.height)
+  scroll/tick(sr, now, sp.content-h, vs.vp.height, vs.density)
   val sy = get-scroll-y(sr)
   val bar = scroll-bar-info(sr, now, sp.content-h, vs)
   render-idle-pixels(sp, sy, w, h, bar)

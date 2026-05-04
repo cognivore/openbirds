@@ -70,6 +70,13 @@ pub struct scroll-state
   // pan call. Stale by at most one frame, which is fine.
   cached-max-y     : float64
   cached-dim       : float64
+  // Framebuffer-pixels per logical (perceptual) point. 1.0 on a
+  // non-Retina surface, 3.0 on @3x iPhone. Scroll's "comfort-unit"
+  // constants (velocity floor, indicator hit zones, minimum bar
+  // height) are defined in logical points and scaled by this when
+  // they touch the pixel grid. Without it, every cosmetic constant
+  // silently became 1/3 the intended size on Retina displays.
+  cached-density   : float64
   // Scrollbar scrubber mode: when the touch lands on/near the
   // indicator, finger movement maps directly to bar position
   // instead of running the normal 1:1 pan. `scrubber-scale`
@@ -81,7 +88,7 @@ pub struct scroll-state
 pub alias scroll-cell = ref<global, scroll-state>
 
 pub fun new-scroll-cell() : alloc<global> scroll-cell
-  ref(Scroll-state(0.0, 0.0, False, 0.0, 0.0, [], 0.0, 0.0, 0.0, False, 0.0))
+  ref(Scroll-state(0.0, 0.0, False, 0.0, 0.0, [], 0.0, 0.0, 0.0, 1.0, False, 0.0))
 
 pub fun get-scroll-y(c : scroll-cell) : <read<global>> int
   (!c).scroll-y.floor.int
@@ -101,7 +108,8 @@ pub fun pan-start(c : scroll-cell, vs : viewport-spec,
   val s = !c
   val (active, scale) = scrubber-hit-test(s, vs, x, y)
   c := Scroll-state(s.scroll-y, 0.0, True, y, t, [], t,
-                    s.cached-max-y, s.cached-dim, active, scale)
+                    s.cached-max-y, s.cached-dim, s.cached-density,
+                    active, scale)
 
 // Finger moves to viewport y `y` at time `t`. Two paths:
 //   - In scrubber mode: scale finger Δy by `scrubber-scale` and
@@ -124,7 +132,7 @@ pub fun pan-move(c : scroll-cell, y : float64, t : float64) : <read<global>, wri
                     elif target > s.cached-max-y then s.cached-max-y
                     else target
     c := Scroll-state(clamped, 0.0, True, y, t, [], t,
-                      s.cached-max-y, s.cached-dim,
+                      s.cached-max-y, s.cached-dim, s.cached-density,
                       True, s.scrubber-scale)
   else
     val dy = s.last-pan-y - y     // positive when finger moves up
@@ -132,7 +140,8 @@ pub fun pan-move(c : scroll-cell, y : float64, t : float64) : <read<global>, wri
     val new-y     = apply-pan-delta(s.scroll-y, dy, s.cached-max-y, s.cached-dim)
     val new-window = push-vel-sample(s.vel-window, Vel-sample(dy, dt))
     c := Scroll-state(new-y, 0.0, True, y, t, new-window, t,
-                      s.cached-max-y, s.cached-dim, False, 0.0)
+                      s.cached-max-y, s.cached-dim, s.cached-density,
+                      False, 0.0)
 
 // Finger released at time `t`. Scrubber releases settle at zero
 // velocity (no momentum kick); normal pan releases compute the
@@ -145,15 +154,16 @@ pub fun pan-end(c : scroll-cell, t : float64) : <read<global>, write<global>, di
   val s  = !c
   val vy = if s.scrubber-active then 0.0 else release-velocity(s.vel-window)
   c := Scroll-state(s.scroll-y, vy, False, s.last-pan-y, t, [], t,
-                    s.cached-max-y, s.cached-dim, False, 0.0)
+                    s.cached-max-y, s.cached-dim, s.cached-density,
+                    False, 0.0)
 
 // --- scrubber hit-test ----------------------------------------------------
 
-// Horizontal slop around the visible bar. The bar itself is
-// `bar-width-px + bar-right-inset-px` ≈ 6 px from the screen edge;
-// finger pads need a bigger target so we extend the hit zone
-// inward by ~24 px.
-val scrubber-x-slop-px : int = 24
+// Horizontal slop around the visible bar (logical points). The bar
+// itself is bar-width + bar-right-inset ≈ 6 pt from the screen edge;
+// finger pads need a bigger target so we extend the hit zone inward
+// by ~24 pt. lpx() multiplies by the spec's density at use time.
+val scrubber-x-slop-pt : int = 24
 
 // Returns (scrubber-active, scrubber-scale). False / 0.0 if the
 // touch isn't on the indicator or the content fits in the
@@ -164,14 +174,16 @@ fun scrubber-hit-test(s : scroll-state, vs : viewport-spec,
   else
     val (_sx0, sy0, sx1, sy1) = safe-rect(vs)
     val safe-h    = sy1 - sy0
-    val track-y0  = sy0 + bar-end-pad-px
-    val track-y1  = sy1 - bar-end-pad-px
+    val end-pad   = lpx(vs, bar-end-pad-pt)
+    val min-bar-h = lpx(vs, bar-min-h-pt)
+    val track-y0  = sy0 + end-pad
+    val track-y1  = sy1 - end-pad
     val track-h   = track-y1 - track-y0
     val content-h = (s.cached-max-y + s.cached-dim).floor.int
     if track-h <= 0 || safe-h <= 0 || content-h <= safe-h then (False, 0.0)
     else
       val bar-h-raw = (track-h.float64 * safe-h.float64 / content-h.float64).floor.int
-      val bar-h     = if bar-h-raw < bar-min-h-px then bar-min-h-px else bar-h-raw
+      val bar-h     = if bar-h-raw < min-bar-h then min-bar-h else bar-h-raw
       val bar-travel = track-h - bar-h
       if bar-travel <= 0 then (False, 0.0)
       else
@@ -180,7 +192,7 @@ fun scrubber-hit-test(s : scroll-state, vs : viewport-spec,
         val frac = if frac-raw < 0.0 then 0.0 elif frac-raw > 1.0 then 1.0 else frac-raw
         val bar-y0 = track-y0.float64 + (bar-travel.float64 * frac)
         val bar-y1 = bar-y0 + bar-h.float64
-        val hit-x-min = (sx1 - bar-width-px - bar-right-inset-px - scrubber-x-slop-px).float64
+        val hit-x-min = (sx1 - lpx(vs, bar-width-pt) - lpx(vs, bar-right-inset-pt) - lpx(vs, scrubber-x-slop-pt)).float64
         val hit-x-max = sx1.float64
         if x >= hit-x-min && x <= hit-x-max && y >= bar-y0 && y <= bar-y1 then
           (True, s.cached-max-y / bar-travel.float64)
@@ -224,7 +236,14 @@ val resistance-per-s : float64 = 2.0
 // Below this absolute velocity, snap to zero — avoids forever
 // near-zero drift. The exponential tail of resistance=2 puts very
 // small velocities indistinguishable from rest on the screen.
-val velocity-floor : float64 = 12.0
+//
+// Expressed in *logical points per second* — gets multiplied by
+// the cached density (`fb-px / pt`) before comparison so the
+// perceptual cutoff is the same on every display. 12 fb-px/s on
+// an @1x display is the same perceived motion as 36 fb-px/s on
+// an @3x display; the constant captures the common perceived
+// quantity.
+val velocity-floor-pt : float64 = 12.0
 
 // Holko rubber-band:  f(x, d, c) = (x · d · c) / (d + c · x)
 // asymptotes at `d`. c = 0.55 is the constant UIScrollView uses.
@@ -242,10 +261,14 @@ val two-pi         : float64 = 6.283185307179586
 // Per-frame integration. `dt` is the elapsed seconds since the
 // last tick. `content-h` is the natural scrollable content height;
 // the legal scroll-y range is [0, content-h - scrollable-vh].
-// Updates the cell in place; the indicator's `last-activity-s`
-// tracks every frame the position actually moves.
+// `density` is the host's framebuffer-pixels-per-logical-point
+// (1.0 on non-Retina, 3.0 on @3x); used to scale velocity-floor
+// and other comfort-units constants onto the pixel grid. Updates
+// the cell in place; the indicator's `last-activity-s` tracks
+// every frame the position actually moves.
 pub fun tick(c : scroll-cell, t : float64,
-             content-h : int, scrollable-vh : int) : <read<global>, write<global>> ()
+             content-h : int, scrollable-vh : int,
+             density : float64) : <read<global>, write<global>> ()
   val s = !c
   val dt = t - s.last-update-s
   if dt <= 0.0 then ()
@@ -253,15 +276,17 @@ pub fun tick(c : scroll-cell, t : float64,
     val max-y = (content-h - scrollable-vh).float64
     val max-y-clamped = if max-y < 0.0 then 0.0 else max-y
     val dim   = scrollable-vh.float64
+    val dens  = if density <= 0.0 then 1.0 else density
+    val v-floor = velocity-floor-pt * dens
     val (new-y, new-vy) =
       if s.pan-active then
         (s.scroll-y, s.scroll-vy)
       else
-        integrate-momentum(s.scroll-y, s.scroll-vy, dt, max-y-clamped)
+        integrate-momentum(s.scroll-y, s.scroll-vy, dt, max-y-clamped, v-floor)
     val moved = (new-y - s.scroll-y).abs > 0.5
     val activity-s = if moved || s.pan-active then t else s.last-activity-s
     c := Scroll-state(new-y, new-vy, s.pan-active, s.last-pan-y, t,
-                      s.vel-window, activity-s, max-y-clamped, dim,
+                      s.vel-window, activity-s, max-y-clamped, dim, dens,
                       s.scrubber-active, s.scrubber-scale)
 
 // --- scroll-bar indicator -------------------------------------------------
@@ -274,15 +299,18 @@ pub fun tick(c : scroll-cell, t : float64,
 
 val bar-hold-s   : float64 = 0.5
 val bar-fade-s   : float64 = 0.4
-val bar-width-px : int     = 3
-val bar-right-inset-px : int = 3
-val bar-end-pad-px     : int = 4   // vertical pad inside the safe rect
-val bar-min-h-px       : int = 24
-val bar-max-alpha      : int = 180  // 0..255; iOS feels ~180 on a black bg
-// While the user is actively scrubbing, the indicator widens
-// inward and brightens — same convention as iOS, where grabbing
-// the scroll indicator promotes it to a thicker scrubber.
-val bar-width-scrubber-px : int = 7
+// Geometry expressed in *logical points* — multiplied by the
+// viewport-spec's density at the moment we project onto the
+// framebuffer. Without this, every constant below was silently
+// 1/3 its intended size on @3x devices: a 3-px-wide bar became
+// 1 logical pt, a 4-px end-pad became 1.3 logical pt, the
+// scrubber's 24-px finger-pad slop shrank to 8 logical pt.
+val bar-width-pt          : int = 3
+val bar-right-inset-pt    : int = 3
+val bar-end-pad-pt        : int = 4
+val bar-min-h-pt          : int = 24
+val bar-width-scrubber-pt : int = 7
+val bar-max-alpha         : int = 180  // 0..255; iOS feels ~180 on a black bg
 val bar-scrubber-alpha    : int = 235
 
 pub value struct scroll-bar
@@ -303,8 +331,10 @@ pub fun scroll-bar-info(c : scroll-cell, now : float64,
                         content-h : int, vs : viewport-spec) : <read<global>> scroll-bar
   val s = !c
   val (_sx0, sy0, sx1, sy1) = safe-rect(vs)
-  val track-y0 = sy0 + bar-end-pad-px
-  val track-y1 = sy1 - bar-end-pad-px
+  val end-pad   = lpx(vs, bar-end-pad-pt)
+  val min-bar-h = lpx(vs, bar-min-h-pt)
+  val track-y0 = sy0 + end-pad
+  val track-y1 = sy1 - end-pad
   val track-h  = track-y1 - track-y0
   val safe-h   = sy1 - sy0
   if track-h <= 0 || safe-h <= 0 || content-h <= safe-h then invisible-bar
@@ -315,15 +345,16 @@ pub fun scroll-bar-info(c : scroll-cell, now : float64,
       val ch = content-h.float64
       val sh = safe-h.float64
       val bar-h-raw = (track-h.float64 * sh / ch).floor.int
-      val bar-h = if bar-h-raw < bar-min-h-px then bar-min-h-px else bar-h-raw
+      val bar-h = if bar-h-raw < min-bar-h then min-bar-h else bar-h-raw
       val max-scroll-y = (content-h - safe-h).float64
       val frac-raw = if max-scroll-y > 0.0 then s.scroll-y / max-scroll-y else 0.0
       val frac = if frac-raw < 0.0 then 0.0 elif frac-raw > 1.0 then 1.0 else frac-raw
       val bar-y0 = track-y0 + ((track-h - bar-h).float64 * frac).floor.int
       val bar-y1 = bar-y0 + bar-h
-      val width = if s.scrubber-active then bar-width-scrubber-px else bar-width-px
+      val width-pt = if s.scrubber-active then bar-width-scrubber-pt else bar-width-pt
+      val width    = lpx(vs, width-pt)
       val alpha = if s.scrubber-active then bar-scrubber-alpha else base-alpha
-      val bar-x1 = sx1 - bar-right-inset-px
+      val bar-x1 = sx1 - lpx(vs, bar-right-inset-pt)
       val bar-x0 = bar-x1 - width
       Scroll-bar(True, alpha, bar-x0, bar-y0, bar-x1, bar-y1)
 
@@ -385,41 +416,67 @@ fun apply-pan-delta(y : float64, dy : float64, max-y : float64, dim : float64)
 // One physics step. If the position is past an edge, the spring-
 // back governs (Holko's UIAttachmentBehavior with damping=1,
 // freq=2 Hz). Otherwise free coast with Box2D linear resistance
-// (UIDynamicItemBehavior with resistance=2.0).
-fun integrate-momentum(y : float64, vy : float64, dt : float64, max-y : float64)
+// (UIDynamicItemBehavior with resistance=2.0). `v-floor` is the
+// density-scaled snap-to-rest threshold in fb-px/s.
+fun integrate-momentum(y : float64, vy : float64, dt : float64,
+                       max-y : float64, v-floor : float64)
         : (float64, float64)
   if y < 0.0 then
-    integrate-spring(y, vy, 0.0, dt)
+    integrate-spring(y, vy, 0.0, dt, v-floor)
   elif y > max-y then
-    integrate-spring(y, vy, max-y, dt)
+    integrate-spring(y, vy, max-y, dt, v-floor)
   else
-    integrate-coast(y, vy, dt)
+    integrate-coast(y, vy, dt, v-floor)
 
 // Free-coast step: closed-form integration of `dv/dt = -R · v`.
 //   v(t+dt) = v(t) · exp(-R·dt)
 //   y(t+dt) = y(t) + v(t) · (1 - exp(-R·dt)) / R
-// Snap below `velocity-floor` so we don't drift forever.
-fun integrate-coast(y : float64, vy : float64, dt : float64) : (float64, float64)
+// Snap below `v-floor` so we don't drift forever.
+fun integrate-coast(y : float64, vy : float64, dt : float64,
+                    v-floor : float64) : (float64, float64)
   val k       = (0.0 - resistance-per-s * dt).exp
   val vy-raw  = vy * k
   val dy      = vy * (1.0 - k) / resistance-per-s
-  val vy-next = if vy-raw.abs < velocity-floor then 0.0 else vy-raw
+  val vy-next = if vy-raw.abs < v-floor then 0.0 else vy-raw
   (y + dy, vy-next)
 
-// Critically-damped harmonic spring step (semi-implicit Euler).
-//   ω = 2π · spring-freq-hz
-//   a = -ω² · (y - target) - 2ζω · vy
-//   vy ← vy + a · dt
-//   y  ← y  + vy · dt
-// Snap to rest when both displacement and velocity are tiny.
-fun integrate-spring(y : float64, vy : float64, target : float64, dt : float64)
-        : (float64, float64)
-  val omega   = two-pi * spring-freq-hz
-  val accel   = (0.0 - omega * omega * (y - target))
-                - 2.0 * spring-damping * omega * vy
-  val vy-next = vy + accel * dt
-  val y-next  = y + vy-next * dt
-  if (y-next - target).abs < 0.5 && vy-next.abs < velocity-floor then
+// Critically-damped harmonic spring step — closed-form integration.
+//
+// The continuous ODE  y'' + 2ω·y' + ω²·y = 0  with critical damping
+// (ζ = 1) has the analytic solution
+//
+//   Δ(t) = (Δ₀ + (v₀ + ω·Δ₀)·t) · e^(-ω·t)
+//   v(t) = (v₀ - ω²·Δ₀·t - ω·v₀·t) · e^(-ω·t)
+//
+// where Δ = y - target. Critical damping means asymptotic approach
+// without overshoot — IF you actually evaluate the closed form.
+//
+// We were running semi-implicit Euler instead, and the discrete
+// dynamics with our parameters (ω ≈ 12.566 rad/s, dt ≈ 16 ms) drift
+// underdamped: after a release just past max-y, the discrete
+// integrator overshoots BELOW max-y by hundreds of pixels and only
+// slowly damps back. The user sees scroll-y settling visibly below
+// the page bottom; a UI test that taps the close-rect 350 ms after
+// release fails because the rect has been pulled out from under the
+// finger by the bogus oscillation.
+//
+// Closed form has zero discretisation error and removes both the
+// visual artefact and the test flake. Cost is two `exp` calls per
+// edge-spring tick — negligible since springs only run while past
+// an edge, which is at most a handful of frames per scroll session.
+//
+// Snap-to-rest when both displacement and velocity are tiny. The
+// floor parameter is the same density-scaled threshold used by the
+// coast integrator.
+fun integrate-spring(y : float64, vy : float64, target : float64, dt : float64,
+                     v-floor : float64) : (float64, float64)
+  val omega = two-pi * spring-freq-hz
+  val d0    = y - target
+  val v0    = vy
+  val e     = (0.0 - omega * dt).exp
+  val d-t   = (d0 + (v0 + omega * d0) * dt) * e
+  val v-t   = (v0 - omega * omega * d0 * dt - omega * v0 * dt) * e
+  if d-t.abs < 0.5 && v-t.abs < v-floor then
     (target, 0.0)
   else
-    (y-next, vy-next)
+    (target + d-t, v-t)

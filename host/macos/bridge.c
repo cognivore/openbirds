@@ -81,6 +81,8 @@ extern kk_integer_t kk_render_would_close_tap(kk_ref_t sr, kk_ref_t pc, kk_ref_t
     kk_integer_t vx, kk_integer_t vy, kk_context_t* _ctx);
 extern kk_std_core_types__tuple4 kk_render_cached_x_rect(kk_ref_t pc, kk_context_t* _ctx);
 extern kk_std_core_types__tuple4 kk_render_cached_close_rect(kk_ref_t pc, kk_context_t* _ctx);
+extern kk_string_t kk_render_tap_debug_line(kk_ref_t sr, kk_ref_t pc, kk_ref_t spec,
+    kk_integer_t vx, kk_integer_t vy, kk_context_t* _ctx);
 extern bool kk_scene_should_exit(kk_ref_t s, double now, kk_context_t* _ctx);
 extern double kk_runtime_gif_duration_s(kk_ref_t s, kk_context_t* _ctx);
 extern kk_ref_t kk_truetype_registry_new_font_registry(kk_context_t* _ctx);
@@ -98,7 +100,8 @@ extern kk_unit_t kk_render_set_spec(kk_ref_t c,
     kk_integer_t w, kk_integer_t h,
     kk_integer_t safe_top, kk_integer_t safe_leading,
     kk_integer_t safe_trailing, kk_integer_t safe_bottom,
-    kk_integer_t corner_radius, kk_context_t* _ctx);
+    kk_integer_t corner_radius, double density,
+    kk_context_t* _ctx);
 
 // --- session lifecycle ------------------------------------------------------
 
@@ -316,8 +319,10 @@ void openbirds_render_frame(double now_seconds,
                             int32_t safe_top, int32_t safe_leading,
                             int32_t safe_trailing, int32_t safe_bottom,
                             int32_t corner_radius_px,
+                            double density,
                             uint8_t* out_buffer) {
     if (out_buffer == NULL || width_px <= 0 || height_px <= 0) return;
+    if (density <= 0.0) density = 1.0;
 
     const uint64_t t0 = bridge_now_ns();
 
@@ -356,6 +361,7 @@ void openbirds_render_frame(double now_seconds,
         kk_integer_from_int32(safe_trailing, ctx),
         kk_integer_from_int32(safe_bottom, ctx),
         kk_integer_from_int32(corner_radius_px, ctx),
+        density,
         ctx);
 
     kk_vector_t  v = kk_render_frame_rgba(s, sc, fr, gc, sr, pc, spec, now_seconds, ctx);
@@ -445,6 +451,20 @@ void openbirds_tap(int32_t x, int32_t y,
     os_log(OS_LOG_DEFAULT, "openbirds.bridge.tap viewport=(%d,%d) scroll-y=%d → content=(%d,%d) would-close=%d exit_at_s=%.3f",
            x, y, sy, x, y + sy, hit, exit_at_s);
 
+    // Detailed diagnostic for "why didn't this tap close?": pull the
+    // cached x-rect, close-rect, and content-h from Koka and emit
+    // them as a single string so we can read the geometry off the
+    // device log instead of guessing.
+    {
+        kk_string_t ds = kk_render_tap_debug_line(
+            borrow_scroll(ctx), borrow_pcache(ctx), borrow_spec(ctx),
+            kk_integer_from_int32(x, ctx),
+            kk_integer_from_int32(y, ctx), ctx);
+        const char* cs = kk_string_cbuf_borrow(ds, NULL, ctx);
+        os_log(OS_LOG_DEFAULT, "openbirds.bridge.tap-debug %{public}s", cs);
+        kk_string_drop(ds, ctx);
+    }
+
     // The actual dispatch: scroll-aware tap → scene transition.
     kk_render_handle_tap_scrolled(
         borrow_scene(ctx), borrow_scroll(ctx), borrow_pcache(ctx), borrow_spec(ctx),
@@ -494,5 +514,11 @@ void openbirds_pan_end(double t) {
     kk_context_t* ctx = ensure_ctx();
     kk_ref_t      sr  = borrow_scroll(ctx);
     kk_scroll_pan_end(sr, t, ctx);
+    // Diagnostic: scroll-y at the moment of finger lift, so we can
+    // watch it accumulate (or fail to) across consecutive drags.
+    kk_integer_t syk = kk_scroll_get_scroll_y(borrow_scroll(ctx), ctx);
+    int32_t      sy  = kk_integer_clamp32_borrow(syk, ctx);
+    kk_integer_drop(syk, ctx);
+    os_log(OS_LOG_DEFAULT, "openbirds.bridge.pan-end t=%.3f scroll-y=%d", t, sy);
     pthread_mutex_unlock(&g_lock);
 }

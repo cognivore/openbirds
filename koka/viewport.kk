@@ -37,6 +37,8 @@
 
 module viewport
 
+import std/num/float64
+
 // --- types ---------------------------------------------------------------
 
 // The full pixel grid we render into. (0, 0) is the top-left
@@ -94,6 +96,16 @@ pub fun uniform-rounding(r : int) : corner-radii
 // pixel on screen?", "where can I anchor a popover?") without the
 // layout layer ever importing platform-specific code.
 //
+// `density` is framebuffer-pixels per logical (perceptual) point —
+// 1.0 on a non-Retina display, 2.0 on @2x, 3.0 on @3x, ~1.5 on a
+// Surface, fractional on Android with display scaling. Anything
+// expressed in *human-comfort units* (a finger-pad-sized hit zone,
+// a velocity floor in points/sec, a minimum scroll-indicator
+// height) lives in logical points and gets multiplied by `density`
+// at the moment it touches the framebuffer pixel grid. Without it,
+// every cosmetic constant in the codebase silently became 1/3 the
+// intended size when we bumped pixelScale to 3.0.
+//
 // Heap struct (`pub struct`, not `pub value struct`) so passing it
 // as a render-time parameter doesn't bloat the closure capture
 // with the codegen-bug-prone "raw + regular" mix. Same pattern as
@@ -102,12 +114,21 @@ pub struct viewport-spec
   vp      : viewport
   safe    : insets
   corners : corner-radii
+  density : float64
 
 // Convenience: a viewport-spec for environments without system
 // chrome (browsers, headless tests, the static smoke test). All
-// pixels safe, all corners square.
+// pixels safe, all corners square, density 1.0 (= no Retina
+// scaling, framebuffer pixels ARE logical points).
 pub fun bare-spec(w : int, h : int) : viewport-spec
-  Viewport-spec(Viewport(w, h), zero-insets, no-rounding)
+  Viewport-spec(Viewport(w, h), zero-insets, no-rounding, 1.0)
+
+// Convenience: convert a logical-point length into framebuffer
+// pixels via the spec's density. Floor so we land on a real pixel
+// boundary; tiny rounding errors are visually irrelevant for the
+// constants this is used on.
+pub fun lpx(vs : viewport-spec, logical-pt : int) : int
+  (logical-pt.float64 * vs.density).floor.int
 
 // --- structural equality (cache-key friendly) ----------------------------
 
@@ -117,7 +138,8 @@ pub fun bare-spec(w : int, h : int) : viewport-spec
 pub fun viewport-spec-eq(a : viewport-spec, b : viewport-spec) : bool
   insets-eq(a.safe, b.safe) &&
   corners-eq(a.corners, b.corners) &&
-  a.vp.width == b.vp.width && a.vp.height == b.vp.height
+  a.vp.width == b.vp.width && a.vp.height == b.vp.height &&
+  a.density == b.density
 
 fun insets-eq(a : insets, b : insets) : bool
   a.top == b.top && a.leading == b.leading &&

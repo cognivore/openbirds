@@ -11,3 +11,4 @@
 - [Sticky chrome deferred to WM](project_sticky_chrome_for_wm.md) — first scroll v1 had ad-hoc sticky top/bottom bands; ripped out because sticky regions should be a foundational primitive of the eventual framebuffer-as-window-manager layer, not bolted onto typography
 - [SwiftUI .ignoresSafeArea zeroes geo.safeAreaInsets](feedback_swiftui_safearea_ignoresafe_zeroes_geo.md) — read true device insets off UIWindow.safeAreaInsets via UIApplication.connectedScenes when full-bleed rendering
 - [Mirror auto-memory into the repo](feedback_mirror_memory_into_repo.md) — every commit of substance: cp ~/.claude/.../memory/*.md docs/memory/ and stage alongside code
+- [Critically-damped springs need closed-form, not Euler](project_critically_damped_needs_closed_form.md) — semi-implicit Euler with ζ=1 at ω≈12.566 dt≈16ms drifts underdamped; use closed-form e^(-ω·t)·(Δ₀ + (v₀+ω·Δ₀)·t)

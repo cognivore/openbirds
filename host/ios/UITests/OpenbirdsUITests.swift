@@ -46,14 +46,35 @@ final class ScrollAndCloseTest: XCTestCase {
         // Capture the initial state for diagnostic attachment.
         attachScreenshot(app, name: "01-initial")
 
-        // Scroll to the bottom: a series of fast swipe-ups. Each
-        // swipeUp travels roughly 0.6 of the screen height, so 8
-        // swipes should comfortably reach the bottom of the
-        // ~2.5x-viewport-tall content.
-        for i in 0..<10 {
-            app.swipeUp(velocity: .fast)
-            usleep(150_000) // let momentum land between swipes
-            if i % 3 == 2 {
+        // Scroll to the bottom: a series of long, deterministic
+        // coordinate drags. `swipeUp(velocity:.fast)` only varies
+        // the *speed* of a fixed 0.2-of-viewport finger travel, so
+        // its momentum kick is stochastic enough that "10 swipes
+        // reach max-y" is true at @1x but borderline at @3x — the
+        // taller @3x page has the same fractional reach, but the
+        // run-to-run variance in release velocity (jittery sim
+        // gesture timing → jittery velocity-window average) is
+        // around 1000 fb-px, which becomes a meaningful fraction of
+        // the remaining-to-scroll distance at @3x.
+        //
+        // A coordinate drag from y=0.85 to y=0.05 with a known
+        // duration moves the finger a deterministic 0.8 of the
+        // viewport in 0.20 s, producing a release velocity that
+        // does not depend on the recogniser's internal heuristics.
+        // 12 drags at @3x consistently overshoot max-y, then the
+        // Holko rubber-band + critically-damped spring pins
+        // scroll-y to max-y on release (the page can't scroll past
+        // its bottom edge). This makes the resting position
+        // deterministic regardless of per-drag momentum jitter:
+        // "we definitely reached the end and bounced back" beats
+        // "we hopefully scrolled enough" every time.
+        for i in 0..<12 {
+            let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85))
+            let end   = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05))
+            start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .fast,
+                        thenHoldForDuration: 0.0)
+            usleep(350_000) // generous settle so spring-back lands before next drag
+            if i % 4 == 3 {
                 attachScreenshot(app, name: String(format: "02-scroll-%02d", i))
             }
         }

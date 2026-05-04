@@ -83,11 +83,14 @@ struct FramebufferView: View {
     static let startTime = CFAbsoluteTimeGetCurrent()
 
     // Pixel-density scale: how many framebuffer pixels per logical
-    // point. 1.0 keeps the brain rendering at logical-point
-    // resolution and lets iOS upscale 3× nearest-neighbour for the
-    // pixel-art look. Bumping to 2 or 3 trades CPU for sharper
-    // typography (text strokes get the device's native dpi).
-    private static let pixelScale: CGFloat = 1.0
+    // point. 3.0 matches the native @3x of modern iPhones, so iOS
+    // displays one Koka pixel per device pixel — no nearest-neighbour
+    // upscale, no chunk artefacts on type. Cost is 9× framebuffer
+    // area, paid mostly during page composition (cached afterwards).
+    // Drop to 2.0 if a particular device's per-frame budget can't
+    // afford full @3x; drop to 1.0 to opt back into the chunky
+    // pixel-art look (and let the OS do the upscale).
+    private static let pixelScale: CGFloat = 3.0
 
     // Drag tracking: SwiftUI's DragGesture only sends `onChanged`
     // (no separate "began"), so we synthesise pan-start on the
@@ -147,7 +150,8 @@ struct FramebufferView: View {
                     if let img = renderFrame(now: now, w: fbW, h: fbH,
                                              safeTop: safeTop, safeLeading: safeLeading,
                                              safeTrailing: safeTrailing, safeBottom: safeBottom,
-                                             cornerRadius: Self.cornerRadiusPx) {
+                                             cornerRadius: Self.cornerRadiusPx,
+                                             density: Double(Self.pixelScale)) {
                         Image(decorative: img, scale: 1.0, orientation: .up)
                             .resizable()
                             .interpolation(.none)
@@ -241,13 +245,15 @@ struct FramebufferView: View {
     private func renderFrame(now: TimeInterval, w: Int32, h: Int32,
                              safeTop: Int32, safeLeading: Int32,
                              safeTrailing: Int32, safeBottom: Int32,
-                             cornerRadius: Int32) -> CGImage? {
+                             cornerRadius: Int32,
+                             density: Double) -> CGImage? {
         let byteCount = Int(w) * Int(h) * 4
         var buf = [UInt8](repeating: 0, count: byteCount)
         buf.withUnsafeMutableBufferPointer { ptr in
             openbirds_render_frame(now, w, h,
                                    safeTop, safeLeading, safeTrailing, safeBottom,
                                    cornerRadius,
+                                   density,
                                    ptr.baseAddress!)
         }
         guard let provider = CGDataProvider(data: Data(buf) as CFData) else {
