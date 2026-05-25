@@ -14,10 +14,12 @@ module hello
 
 import std/num/int64
 import host
-// Pull render + runtime + scene + ttf into the module graph so their
-// symbols (kk_koka_render_*, kk_koka_runtime_*, kk_koka_scene_*,
-// kk_koka_ttf_*) are available in the static library / dylib.
-import render
+// Pull app + runtime + scene + ttf into the module graph so their
+// symbols (kk_app_*, kk_runtime_*, kk_scene_*, kk_ttf_*) are
+// available in the static library / dylib. `app` is the
+// openbirds-specific composition site; it transitively imports
+// framebuffer / pixel / viewport / scroll / window-article.
+import app
 import runtime
 import scene
 import ttf

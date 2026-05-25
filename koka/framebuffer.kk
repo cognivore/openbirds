@@ -47,3 +47,17 @@ pub fun build-pixels(w : width, h : height,
     val row = i / cw
     val col = i - row * cw
     colour-at(Pixel-x(col), Pixel-y(row))
+
+// Alpha-over a white pixel onto an opaque RGBA-packed base. The base
+// stays alpha=255 (the framebuffer is opaque); we just lerp each
+// channel toward 255 by alpha/255. Integer math throughout — cheap
+// enough to call from per-pixel code.
+pub fun over-white(base : int, alpha : int) : int
+  val rr = (base / 16777216) % 256
+  val gg = (base / 65536)    % 256
+  val bb = (base / 256)      % 256
+  val inv = 255 - alpha
+  val r2  = (rr * inv + 255 * alpha) / 255
+  val g2  = (gg * inv + 255 * alpha) / 255
+  val b2  = (bb * inv + 255 * alpha) / 255
+  pack-rgba(r2, g2, b2, 255)

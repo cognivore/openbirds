@@ -1,33 +1,31 @@
-// koka/render.kk — the renderer.
+// koka/app.kk — the openbirds composition site.
 //
-// `frame-rgba` is the one function the C bridge calls per frame.
-// It takes a `session` (the runtime state-cell handle) and returns
-// a packed-RGBA `vector<int>` of length `w-px * h-px` (one int per
-// pixel, layout 0xRRGGBBAA). The bridge expands each int into 4
-// bytes of the framebuffer in a tight C loop.
+// This module owns the *app-specific* glue: it knows there is a GIF
+// session, a typography page, a close button, a scroll cell, and a
+// scene state machine, and it knows how to wire them together into
+// the single `frame-rgba` the C bridge calls per frame.
 //
-// Why packed-int output instead of `vector<int8>`:
-//   - 4× fewer cells for the FFI bridge to unbox (the per-frame
-//     unbox loop was the FFI-side bottleneck).
-//   - The per-pixel renderer no longer allocates an `Rgba` struct
-//     per pixel — it returns a single `int`, keeping the inner
-//     loop allocation-free.
+// Everything below this line is application logic, not rendering
+// substrate. The rendering substrate (typed pixel/colour primitives,
+// `build-pixels`, alpha-blend helpers, viewport queries) lives in
+// `pixel`, `framebuffer`, and `viewport` — those modules import
+// nothing app-specific and could plausibly be lifted into a separate
+// library once a second consumer exists to inform the API shape.
 //
-// Three layers of work-avoidance, in order of how often they hit:
+// Three layers of work-avoidance in the steady state, in order of
+// how often they hit:
 //   1. Rendered-pixels cache (`runtime/cached-pixels`): when the
 //      60 Hz tick asks for the same animation frame at the same
 //      output resolution as last time, we hand back the cached
 //      vector — zero per-pixel work.
-//   2. Decoded-frame cache (inside `current-frame`): when we DO
-//      need to render but the active frame index is unchanged, we
-//      skip the LZW decode.
-//   3. The actual per-pixel sampler (`render-frame-pixels`): only
-//      runs at frame transitions or on resize.
-//
-// Fallback: when no GIF is loaded the renderer paints a hue-cycling
-// checkerboard so the framebuffer pipe is visibly alive during dev.
+//   2. Composed-page cache (`page-cache`): composing the typography
+//      page is ~16 ms cold; cache by viewport-spec + font count and
+//      reuse across frames until the platform presentation changes.
+//   3. Decoded-frame cache (inside `current-frame`): when we DO
+//      need to render but the active GIF frame index is unchanged,
+//      we skip the LZW decode.
 
-module render
+module app
 
 import std/num/float64
 import pixel
@@ -154,10 +152,6 @@ pub fun handle-tap-scrolled(s : scene-cell, sr : scroll-cell, pc : page-cache,
     val cr = cached-close-rect(pc)
     handle-tap-on-rects(s, vx, vy + sy, xr, cr, exit-at-s)
 
-// Bridge-facing diagnostic: would the most recent tap hit a
-// close rect? Used by `openbirds_tap` to log a pass/fail signal
-// without doing the rect math in C. 1 on hit, 0 on miss / off
-// screen.
 // Bridge-facing pan-start that hydrates the viewport-spec out of
 // the global cell so `scroll/pan-start` can run its scrollbar
 // hit-test without us having to ferry the whole spec across the
@@ -167,6 +161,10 @@ pub fun handle-pan-start(sr : scroll-cell, spec : spec-cell,
         : <read<global>, write<global>, div> ()
   scroll/pan-start(sr, get-spec(spec), x, y, t)
 
+// Bridge-facing diagnostic: would the most recent tap hit a
+// close rect? Used by `openbirds_tap` to log a pass/fail signal
+// without doing the rect math in C. 1 on hit, 0 on miss / off
+// screen.
 pub fun would-close-tap(sr : scroll-cell, pc : page-cache, spec : spec-cell,
                         vx : int, vy : int) : <read<global>> int
   val vs = get-spec(spec)
@@ -306,19 +304,6 @@ fun render-idle-pixels(sp : scrollable-page, scroll-y : int,
        && y.row >= bar.y0 && y.row < bar.y1
       then over-white(base, bar.alpha)
       else base
-
-// Alpha-over a white pixel onto an opaque RGBA-packed base. The base
-// stays alpha=255 (the framebuffer is opaque); we just lerp each
-// channel toward 255 by alpha/255. Integer math throughout.
-fun over-white(base : int, alpha : int) : int
-  val rr = (base / 16777216) % 256
-  val gg = (base / 65536)    % 256
-  val bb = (base / 256)      % 256
-  val inv = 255 - alpha
-  val r2  = (rr * inv + 255 * alpha) / 255
-  val g2  = (gg * inv + 255 * alpha) / 255
-  val b2  = (bb * inv + 255 * alpha) / 255
-  pack-rgba(r2, g2, b2, 255)
 
 fun render-playing(s : session, now : float64,
                    w : width, h : height, w-px : int, h-px : int)

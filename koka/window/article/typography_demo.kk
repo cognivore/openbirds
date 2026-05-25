@@ -98,7 +98,7 @@ fun page-description() : <cursor, read<global>, div> ()
 
 // === public composition entry points =====================================
 //
-// `render.kk` calls `compose-scrollable-page` once per cache miss
+// `app.kk` calls `compose-scrollable-page` once per cache miss
 // (font registration, viewport-spec change). The bench calls
 // `compose-page` to time cold + warm composes against the glyph
 // cache.
