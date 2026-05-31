@@ -1,109 +1,136 @@
 # Design Priorities — Animations
 
-Hi — this is the order in which we need animations for MVP, and why.
-Each item: the *why* in plain language first, the requirement
-reference second. Numbered priorities are dependencies, not deadlines.
+Tags are KYIV — **[K]** Key, **[Y]** Yes (deferred), **[V]** Vetoed.
+Bindings come from
+[`02-mvp-kyiv-scoping.md`](02-mvp-kyiv-scoping.md): point crawl is
+dead for the first few versions, so stop thinking about maps and
+neighbours.
 
-Tags follow the KYIV scoping doc. **Bindings come from `02-…`
-(tighter MVP)**, which vetoes the Point Crawl subsystem entirely
-and confines the tamagotchi to its own dwelling for the first few
-versions. **[K]** = Key, must ship; **[Y]** = Yes, deferred past
-MVP; **[V]** = Vetoed.
-
-## Constraints worth knowing up front
-
-Everything ships as pixel art rendered to an RGBA framebuffer. No
-vectors, no spline tweens at runtime — frames are sprite cels. Target
-resolution and palette are still open; the order below is priority,
-not size.
+Order is dependency order. If priority 1 shifts after you've started
+priority 2, we redraw everything downstream — so we pin priority 1
+first.
 
 ---
 
 ## Priority 1 — Tamagotchi expression sheet
 
-This is the protagonist's whole vocabulary. Every later asset — idle
-scene, intensity ramp, dwelling loop, thumbnail — either reuses one
-of these poses or transitions between them. If we pin anything else
-down first, the moment the expression vocabulary shifts we redraw
-everything downstream.
+This is the character's whole vocabulary.
 
-Deliver: base pose + a minimal set of distinct emotion states
-(start small; we'll cull). Static cels are enough — no timing yet.
+Deliver: base pose + a minimal set of distinct emotion states (start
+small). Static cels are enough — don't burn cycles on animation.
+This will allow us to design the positive and "feel-good"
+tamagotchi's animations.
 
-Ref: E-REQ-1 [K], E-REQ-2 [K] (no pose in the set may read as
-directly negative).
+*Note*: do not spend time on negative or ambiguous poses /
+emotions. Because the application is largely self-help, we need to
+guarantee that no matter what, tamagotchi is happy about being with
+their human.
 
-## Priority 2 — On-open idle loop
+Ref:
+[`E-REQ-1`](00-mvp-kyiv-requirements-vs-feature_wishlist.md#e-req-1) [K],
+[`E-REQ-2`](00-mvp-kyiv-requirements-vs-feature_wishlist.md#e-req-2) [K].
 
-This is the guaranteed-comfort floor: the first frame the user sees,
-every single session. Miss this and everything else in the app is
-downstream of a bad first impression. Pick the warmest, safest pose
-from priority 1 and let it breathe.
+## Priority 2 — On-open idle loop design
 
-Deliver: one looping idle animation (4–8 cels), tamagotchi in its
-dwelling, zero narrative content.
+This may feel silly at such a high priority, but I think it's
+absolutely critical that we get the first impression right. For
+example, when you open Finch for the first time each day, it has a
+celebratory (non-animated) screen depicting tamagotchi being happy
+to start their day.
 
-Ref: E-REQ-2 [K].
+Deliver: design some start-of-the-day ideas, perhaps develop one or
+two. Think about how we can reuse the pose sheet from priority 1
+for it.
+
+Ref:
+[`E-REQ-2`](00-mvp-kyiv-requirements-vs-feature_wishlist.md#e-req-2) [K].
 
 ## Priority 3 — Affection-toward-human intensity ramp
 
-The only reward we ship in MVP is *"your tamagotchi cares about you,
-and you can feel how much."* Your job here is to make low / mid /
-high legible at a glance without numbers or bars — pose, posture,
-micro-motion. This *is* the reward loop, visually.
+The only reward we ship in MVP is *"your tamagotchi cares about
+you, and you can feel how much."*
 
-Deliver: 3–5 stepped intensity expressions for category A.1, with
-explicit transition cels between adjacent steps.
+Your job here is to make low / mid / high legible at a glance
+without numbers or bars — pose, posture, micro-motion.
 
-Ref: R-REQ-1 [K], R-IMP-A.1 [K] (categories A.2 and A.3 are [Y] —
-don't draw for them).
+This is the reward loop, visually.
+
+Deliver: 3–5 stepped intensity expressions for A.1, *with explicit
+transition cels between adjacent steps*. Think about how it
+interplays with emotions from priority 1.
+
+Ref:
+[`R-REQ-1`](00-mvp-kyiv-requirements-vs-feature_wishlist.md#r-req-1) [K],
+[`R-IMP-A.1`](00-mvp-kyiv-requirements-vs-feature_wishlist.md#r-imp-a-1) [K].
+A.2 and A.3 are Y — skip them.
 
 ## Priority 4 — Up-close dwelling animation
 
-The dwelling is the *only* screen the tamagotchi appears on in the
-tighter MVP — no map, no neighbours, no destinations. The idle from
-priority 2 plus a couple of ambient actions (look around, scratch,
-fidget) is enough.
+The dwelling is the only screen the tamagotchi appears on in the
+tighter MVP — no map, no neighbours, no destinations.
 
-Deliver: idle loop + 2–3 ambient action loops, all framed inside the
-same dwelling.
+This means the screen of tamagotchi inside the dwelling must be
+enough for the user to be engaged.
 
-Ref: D-REQ-1 [K] (formerly P-REQ-2).
+The key design work here is to understand what is the *unit of
+engagement* in the dwelling screen. I think that it should be
+tamagotchi empathetically suggesting to do something off the list.
+Maybe something like tamagotchi suggesting "this or this"? Does
+it make sense?
+
+Deliver:
+
+- Idle animation (look around / scratch / nap).
+- Nudge design + animation prototype.
+
+Ref: [`D-REQ-1`](02-mvp-kyiv-scoping.md#d-req-1) [K] (formerly
+[`P-REQ-2`](00-mvp-kyiv-requirements-vs-feature_wishlist.md#p-req-2)).
+The nudge interplays with
+[`T-REQ-2`](00-mvp-kyiv-requirements-vs-feature_wishlist.md#t-req-2) [K]
+(dailies tracker) — that crossover isn't captured in `02-…` yet; we
+should add it.
 
 ---
 
 ## Not yet — and why
 
-### Sequencing-deferred (still [K], will be asked for later)
+### Still Key, just not yet
 
-- **Dwelling background.** Inherits perspective and scale from the
-  dwelling animation — character lock first (priorities 1–4), then
-  this.
-  Ref: D-REQ-2 [K] (formerly P-REQ-2.1).
+- **Dwelling background.** Inherits perspective and scale from
+  priority 4 — lock the character first, then this.
+  Ref: [`D-REQ-2`](02-mvp-kyiv-scoping.md#d-req-2) [K].
 
-### Wishlist ([Y], skip unless we explicitly ask)
+### Yes, but later
 
-- **Reward categories A.2 (resources) and A.3 (items/abilities).**
-  No resource icons, no bicycle sprites yet.
-  Ref: R-IMP-A.2 [Y], R-IMP-A.3 [Y].
+- **Reward categories A.2 (resources), A.3 (items/abilities).** No
+  resource icons, no bicycle sprites yet.
+  Ref:
+  [`R-IMP-A.2`](00-mvp-kyiv-requirements-vs-feature_wishlist.md#r-imp-a-2) [Y],
+  [`R-IMP-A.3`](00-mvp-kyiv-requirements-vs-feature_wishlist.md#r-imp-a-3) [Y].
 
-- **Spaced-repetition surfaces.** No deliverable from you until
-  `T-REQ-2` ships.
-  Ref: T-WISH-A [Y].
+- **Spaced-repetition surfaces.** Nothing from you until
+  [`T-REQ-2`](00-mvp-kyiv-requirements-vs-feature_wishlist.md#t-req-2)
+  ships.
+  Ref: [`T-WISH-A`](00-mvp-kyiv-requirements-vs-feature_wishlist.md#t-wish-a) [Y].
 
-### Vetoed ([V], do not start)
+### Vetoed — don't
 
-- **Point-crawl thumbnail.** No map → no thumbnail.
-  Ref: P-REQ-1 (under S1-VETO).
+If you find yourself drawing any of these, ping me — something's
+out of sync.
 
-- **Isometric adventure-map tiles.** No map → no tile system.
-  Ref: P-REQ-1.2 (under S1-VETO).
-
-- **Destination backgrounds.** No traversal → no destinations.
-  Ref: P-REQ-3 (under S1-VETO).
+- **Point-crawl thumbnail, isometric map tiles, destination
+  backgrounds.** No map → no thumbnails, no tiles, no destinations.
+  Ref:
+  [`P-REQ-1`](00-mvp-kyiv-requirements-vs-feature_wishlist.md#p-req-1),
+  [`P-REQ-1.2`](00-mvp-kyiv-requirements-vs-feature_wishlist.md#p-req-1-2),
+  [`P-REQ-3`](00-mvp-kyiv-requirements-vs-feature_wishlist.md#p-req-3)
+  — all under [`S1-VETO`](02-mvp-kyiv-scoping.md#s1-veto).
 
 - **Secret destinations, transportation modes.** Fall with parent.
-  Ref: P-WISH-C, P-WISH-D (under S1-VETO).
+  Ref:
+  [`P-WISH-C`](00-mvp-kyiv-requirements-vs-feature_wishlist.md#p-wish-c),
+  [`P-WISH-D`](00-mvp-kyiv-requirements-vs-feature_wishlist.md#p-wish-d)
+  under [`S1-VETO`](02-mvp-kyiv-scoping.md#s1-veto).
 
 - **Reflection-subsystem visuals.** Out of MVP entirely.
-  Ref: S5-VETO [V].
+  Ref: [`S5-VETO`](00-mvp-kyiv-requirements-vs-feature_wishlist.md#s5-veto) [V].

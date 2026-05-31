@@ -30,29 +30,29 @@ Conventions for IDs:
 
 | ID | Subsystem | Statement |
 |---|---|---|
-| `P-REQ-1`   | Point Crawl | Distinguishable thumbnail icon per tamagotchi in the point-crawl view. |
-| `P-REQ-1.2` | Point Crawl | Point-crawl rendered as an isometric "adventure map." |
-| `P-REQ-2`   | Point Crawl | Up-close dwelling animation per tamagotchi. |
-| `P-REQ-2.1` | Point Crawl | Up-close dwelling backgrounds (asset class distinct from animations). |
-| `P-REQ-3`   | Point Crawl | Up-close destination backgrounds, distinct from dwelling backgrounds. |
-| `P-IMP-A`   | Point Crawl | Backgrounds authored as top-down landscapes, partitioned into per-sector regions. |
-| `P-IMP-B`   | Point Crawl | Probabilistic point grid for dwelling placement; intra-network co-sector tamagotchis render as neighbours; collision rate ≈ 0 at Dunbar Layer 2 (~15). |
-| `R-REQ-1`   | Reward | Intensity of the in-scope reward category shall be elegantly conveyed. |
-| `R-IMP-A.1` | Reward | In-scope reward category: tamagotchi's emotional response toward its paired human. |
-| `E-REQ-1`   | Emotion | Emotion vocabulary of sufficient breadth to satisfy dependent subsystems, notably `R-REQ-1`. |
-| `E-REQ-2`   | Emotion | No directly negative emotional content; on-open experience is a guaranteed-comfort floor. |
-| `T-REQ-1`   | Task | Localisation: bidirectional + vertical text (LTR/RTL/TTB), multiple natural languages, multiple numeric systems. |
-| `T-REQ-2`   | Task | Daily-task tracking with an org-mode-equivalent interaction model. |
+| <a id="p-req-1"></a>`P-REQ-1`     | Point Crawl | Distinguishable thumbnail icon per tamagotchi in the point-crawl view. |
+| <a id="p-req-1-2"></a>`P-REQ-1.2` | Point Crawl | Point-crawl rendered as an isometric "adventure map." |
+| <a id="p-req-2"></a>`P-REQ-2`     | Point Crawl | Up-close dwelling animation per tamagotchi. |
+| <a id="p-req-2-1"></a>`P-REQ-2.1` | Point Crawl | Up-close dwelling backgrounds (asset class distinct from animations). |
+| <a id="p-req-3"></a>`P-REQ-3`     | Point Crawl | Up-close destination backgrounds, distinct from dwelling backgrounds. |
+| <a id="p-imp-a"></a>`P-IMP-A`     | Point Crawl | Backgrounds authored as top-down landscapes, partitioned into per-sector regions. |
+| <a id="p-imp-b"></a>`P-IMP-B`     | Point Crawl | Probabilistic point grid for dwelling placement; intra-network co-sector tamagotchis render as neighbours; collision rate ≈ 0 at Dunbar Layer 2 (~15). |
+| <a id="r-req-1"></a>`R-REQ-1`     | Reward | Intensity of the in-scope reward category shall be elegantly conveyed. |
+| <a id="r-imp-a-1"></a>`R-IMP-A.1` | Reward | In-scope reward category: tamagotchi's emotional response toward its paired human. |
+| <a id="e-req-1"></a>`E-REQ-1`     | Emotion | Emotion vocabulary of sufficient breadth to satisfy dependent subsystems, notably `R-REQ-1`. |
+| <a id="e-req-2"></a>`E-REQ-2`     | Emotion | No directly negative emotional content; on-open experience is a guaranteed-comfort floor. |
+| <a id="t-req-1"></a>`T-REQ-1`     | Task | Localisation: bidirectional + vertical text (LTR/RTL/TTB) typography, multiple natural languages, multiple numeric systems. |
+| <a id="t-req-2"></a>`T-REQ-2`     | Task | Daily-task tracking with an org-mode-equivalent interaction model. |
 
 ### A.Y — Yes (deferred past MVP)
 
 | ID | Subsystem | Statement |
 |---|---|---|
-| `P-WISH-C`  | Point Crawl | Hidden ("secret") destination backgrounds. |
-| `P-WISH-D`  | Point Crawl | Mode-of-transportation mechanism over the point-crawl graph. |
-| `R-IMP-A.2` | Reward | Resource accrual as a reward category. |
-| `R-IMP-A.3` | Reward | Human-selected items / experiences / abilities granted to the tamagotchi (e.g., bicycle for faster adventures). |
-| `T-WISH-A`  | Task | Spaced-repetition scheduling layered over `T-REQ-2`. |
+| <a id="p-wish-c"></a>`P-WISH-C`   | Point Crawl | Hidden ("secret") destination backgrounds. |
+| <a id="p-wish-d"></a>`P-WISH-D`   | Point Crawl | Mode-of-transportation mechanism over the point-crawl graph. |
+| <a id="r-imp-a-2"></a>`R-IMP-A.2` | Reward | Resource accrual as a reward category. |
+| <a id="r-imp-a-3"></a>`R-IMP-A.3` | Reward | Human-selected items / experiences / abilities granted to the tamagotchi (e.g., bicycle for faster adventures). |
+| <a id="t-wish-a"></a>`T-WISH-A`   | Task | Spaced-repetition scheduling layered over `T-REQ-2`. |
 
 ### A.I — Irrelevant
 
@@ -64,10 +64,10 @@ classified.
 
 ### A.V — Vetoed
 
-| ID | Subsystem | Statement | Veto reason |
-|---|---|---|---|
-| `S5-VETO` | Reflection | The entire Reflection subsystem is out of scope for MVP. | Marked "Out of scope" on the source page. |
-| `E-VETO-NEG` | Emotion | Directly negative emotional content is prohibited. | Active veto by `E-REQ-2`; cite when re-litigating tone. |
+| ID | Statement | Veto reason |
+|---|---|---|
+| <a id="s5-veto"></a>`S5-VETO`         | The entire Reflection subsystem is out of scope for MVP. | Marked "Out of scope" on the source page. |
+| <a id="e-veto-neg"></a>`E-VETO-NEG`   | Directly negative emotional content is prohibited. | Active veto by `E-REQ-2`; cite when re-litigating tone. |
 
 ---
 
@@ -78,59 +78,60 @@ entries will quote requirement text, not table cells.
 
 ### B.1 Point Crawl Subsystem (`P`)
 
-- **P-REQ-1** [K]. The system shall render a distinguishable
+- **`P-REQ-1`** [K]. The system shall render a distinguishable
   thumbnail icon for each tamagotchi within the point-crawl view.
-- **P-REQ-1.2** [K]. The point-crawl view shall be presented as an
+- **`P-REQ-1.2`** [K]. The point-crawl view shall be presented as an
   isometric "adventure map" rather than a top-down or schematic graph.
-- **P-REQ-2** [K]. The system shall render an up-close dwelling
+- **`P-REQ-2`** [K]. The system shall render an up-close dwelling
   animation for each tamagotchi.
-- **P-REQ-2.1** [K]. The system shall provide up-close dwelling
+- **`P-REQ-2.1`** [K]. The system shall provide up-close dwelling
   *backgrounds* as a distinct asset class from dwelling animations.
-- **P-REQ-3** [K]. The system shall provide up-close destination
+- **`P-REQ-3`** [K]. The system shall provide up-close destination
   backgrounds, distinct from dwelling backgrounds.
-- **P-IMP-A** [K]. Backgrounds shall be authored as top-down
+- **`P-IMP-A`** [K]. Backgrounds shall be authored as top-down
   landscapes and partitioned into per-sector regions consumable by
   the renderer.
-- **P-IMP-B** [K]. Tamagotchi home dwellings shall be placed on a
+- **`P-IMP-B`** [K]. Tamagotchi home dwellings shall be placed on a
   probabilistic point grid. Two tamagotchis belonging to the same
   player's social network that fall into the same sector shall be
   rendered as neighbours. The expected rate of such collisions is
   negligible given a Dunbar Layer-2 network size of ~15.
-- **P-WISH-C** [Y]. Hidden ("secret") destination backgrounds,
+- **`P-WISH-C`** [Y]. Hidden ("secret") destination backgrounds,
   surfaced under conditions to be defined.
-- **P-WISH-D** [Y]. A mode-of-transportation mechanism layered over
+- **`P-WISH-D`** [Y]. A mode-of-transportation mechanism layered over
   the point-crawl graph.
 
 ### B.2 Reward Subsystem (`R`)
 
-- **R-IMP-A** [K]. The reward space is partitioned into three
+- **`R-IMP-A`** [K]. The reward space is partitioned into three
   categories:
   - **A.1** [K]: Tamagotchi emotional response toward its paired human.
   - **A.2** [Y]: Resource accrual.
   - **A.3** [Y]: Human-selected items, experiences, or abilities
     granted to the tamagotchi.
-- **R-REQ-1** [K]. The system shall elegantly convey to the user the
+- **`R-REQ-1`** [K]. The system shall elegantly convey to the user the
   intensity of the in-scope reward category (`A.1`).
-- **R-SCOPE** [K]. Only `A.1` is in scope for MVP; the architecture
-  must not preclude `A.2` / `A.3` being added later.
+- <a id="r-scope"></a>**`R-SCOPE`** [K]. Only `A.1` is in scope for
+  MVP; the architecture must not preclude `A.2` / `A.3` being added
+  later.
 
 ### B.3 Emotion Subsystem (`E`)
 
-- **E-REQ-1** [K]. The system shall define an emotion vocabulary of
+- **`E-REQ-1`** [K]. The system shall define an emotion vocabulary of
   sufficient breadth to satisfy all dependent subsystems, notably
   `R-REQ-1`.
-- **E-REQ-2** [K]. The system shall surface no directly negative
+- **`E-REQ-2`** [K]. The system shall surface no directly negative
   emotional content. The on-open experience shall constitute a
   guaranteed-comfort floor.
 
 ### B.4 Task Subsystem (`T`)
 
-- **T-REQ-1** [K]. The system shall support localisation: LTR / RTL /
+- **`T-REQ-1`** [K]. The system shall support localisation: LTR / RTL /
   TTB typography, multiple natural languages, multiple numeric
   systems.
-- **T-REQ-2** [K]. The system shall provide daily-task tracking with
+- **`T-REQ-2`** [K]. The system shall provide daily-task tracking with
   an org-mode-equivalent interaction model.
-- **T-WISH-A** [Y]. Spaced-repetition scheduling layered over
+- **`T-WISH-A`** [Y]. Spaced-repetition scheduling layered over
   `T-REQ-2`.
 
 ### B.5 Reflection Subsystem
