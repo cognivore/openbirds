@@ -38,14 +38,6 @@
             # automatically when flake.lock is bumped.
             export OPENBIRDS_KKLIB_LIB="${kklib.out}/lib"
             export OPENBIRDS_KKLIB_INCLUDE="${kklib.dev}/include"
-
-            echo "openbirds dev shell"
-            echo "  koka     : $(koka --version 2>&1 | head -1)"
-            echo "  xcodegen : $(xcodegen --version 2>&1 | head -1)"
-            echo "  swift    : $(swift --version 2>&1 | head -1)"
-            echo "  kklib    : $OPENBIRDS_KKLIB_LIB"
-            echo
-            echo "Run 'just' for the task list."
           '';
         };
       }
