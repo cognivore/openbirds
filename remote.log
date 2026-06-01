@@ -1,0 +1,1 @@
+c78d73e9-51dc-4be6-87e5-095d34d3bb26 chunk=50MiB encryption=none externaltype=rclone name=gdrive prefix=openbirds-annex rclone_layout=lower target=gdrive type=external timestamp=1780273066s
