@@ -29,6 +29,10 @@
             xcodegen
             just
             git
+            git-annex
+            git-annex-remote-rclone
+            rclone
+            unzip
             jq
           ];
 

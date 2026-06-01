@@ -30,6 +30,8 @@ host/ios/Resources/fonts/
 
 # macOS
 .DS_Store
+# AppleDouble metadata that macOS sprays into zips and tarballs.
+._*
 
 # Direnv
 .direnv/

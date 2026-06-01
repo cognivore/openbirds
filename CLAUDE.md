@@ -114,6 +114,10 @@ under `docs/notes/`. Read these before changing the affected area:
   TYP-SRS-001: five OFL typefaces (EB Garamond, Cormorant
   Garamond, Jost\*, Terminal Grotesque, Terminus), one role each,
   plus the implementation-status notes
+- [`docs/notes/assets-git-annex.md`](docs/notes/assets-git-annex.md) —
+  proprietary asset packs live in git-annex against a private
+  `gdrive:` rclone remote; `LICENSE`/`README.md` stay in plain git
+  so terms are visible without fetching content
 
 ## Stage map (where we are)
 

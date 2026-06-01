@@ -1,0 +1,7 @@
+# Everything under assets/ is content-addressed via git-annex...
+assets/** annex.largefiles=anything
+
+# ...except the human-readable accompaniments, which stay in plain git
+# so they're visible without `git annex get`.
+assets/**/LICENSE annex.largefiles=nothing
+assets/**/README.md annex.largefiles=nothing
