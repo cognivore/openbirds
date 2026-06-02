@@ -12,3 +12,4 @@
 - [SwiftUI .ignoresSafeArea zeroes geo.safeAreaInsets](feedback_swiftui_safearea_ignoresafe_zeroes_geo.md) — read true device insets off UIWindow.safeAreaInsets via UIApplication.connectedScenes when full-bleed rendering
 - [Mirror auto-memory into the repo](feedback_mirror_memory_into_repo.md) — every commit of substance: cp ~/.claude/.../memory/*.md docs/memory/ and stage alongside code
 - [Critically-damped springs need closed-form, not Euler](project_critically_damped_needs_closed_form.md) — semi-implicit Euler with ζ=1 at ω≈12.566 dt≈16ms drifts underdamped; use closed-form e^(-ω·t)·(Δ₀ + (v₀+ω·Δ₀)·t)
+- [Detect scene boundaries by scanning edges for colour steps](project_contact_sheet_boundary_detection.md) — eyeballed crops bleed neighbour-scene slivers that explode under aspect-cover scaling; scan row 0 / col 0 / mid-rows for colour deltas instead

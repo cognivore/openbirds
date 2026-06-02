@@ -293,10 +293,10 @@ fun render-loading-placeholder(vs : viewport-spec, w : width, h : height) : vect
 
 // Active-tamagotchi fullscreen path. Used for Celebrating (intro
 // cheer) and Exiting (legacy goodbye); `cheer` forces level=3 so
-// the loop plays at maximum speed regardless of how many tasks
-// the user has checked. The active scene's background (if loaded)
-// fills the viewport via aspect-cover, then the sprite is overlaid
-// aspect-fit so portraits don't stretch.
+// the ecstatic loop plays at maximum speed regardless of how
+// many tasks the user has checked. The active scene's background
+// (if loaded) fills the viewport via aspect-cover, then the
+// sprite is overlaid aspect-fit so portraits don't stretch.
 fun render-active-tamagotchi(tr : tamagotchi-roster, bg : background-roster,
                              seed : seed-cell, tc : tasks-cell,
                              vs : viewport-spec, now : float64,
@@ -305,11 +305,14 @@ fun render-active-tamagotchi(tr : tamagotchi-roster, bg : background-roster,
   val sd = get-seed(seed)
   match pick-active(tr, sd)
     Nothing -> render-loading-placeholder(vs, w, h)
-    Just((_, g)) ->
+    Just(spec) ->
       val ts    = get-tasks(tc)
       val level = if cheer then 3 else happiness-level(ts)
+      val mood  = mood-name(level)
       val t     = now * speed-mul(level)
-      val sf    = current-frame-of(g, t)
+      val sf    = match lookup-mood-gif(tr, spec, mood)
+        Just(g) -> current-frame-of(g, t)
+        Nothing -> Nothing
       val bf    = match pick-active-background(tr, bg, sd)
         Just(bgg) -> current-frame-of(bgg, now)
         Nothing   -> Nothing
@@ -368,7 +371,8 @@ fun render-fullscreen-pixels(sprite : maybe<decoded-frame>,
           val gy = ((yy - fb.dy0) * fb.gh) / fb.dh
           match f.pixels.at(gy * fb.gw + gx)
             Just(pi) -> match f.palette.at(pi)
-              Just(c) -> c
+              Just(c) ->
+                if (c % 256) == 0 then base else c
               Nothing -> base
             Nothing -> base
 
@@ -399,9 +403,10 @@ fun bg-cover-pixel(f : decoded-frame, vw : int, vh : int,
 
 // Home composition. Pre-resolves the active sprite + background
 // frames ONCE so the per-pixel closure stays pure (build-pixels
-// requires a total callback). The frame, the layout, and the
-// happiness-driven bounce offset are then captured and read by
-// `home-pixel-at`.
+// requires a total callback). The sprite GIF is chosen by the
+// current happiness-level → mood-name mapping (idle/happy/
+// ecstatic), so the user perceives a real animation switch as
+// task cards fill up, not just a speed knob on one loop.
 fun render-home(tr : tamagotchi-roster, bg : background-roster,
                 seed : seed-cell, tc : tasks-cell,
                 vs : viewport-spec, now : float64,
@@ -411,10 +416,12 @@ fun render-home(tr : tamagotchi-roster, bg : background-roster,
   val ts     = get-tasks(tc)
   val sd     = get-seed(seed)
   val level  = happiness-level(ts)
-  val active = pick-active(tr, sd)
-  val frame  = match active
-    Just((_, g)) -> current-frame-of(g, now * speed-mul(level))
-    Nothing      -> Nothing
+  val mood   = mood-name(level)
+  val frame  = match pick-active(tr, sd)
+    Nothing   -> Nothing
+    Just(spec) -> match lookup-mood-gif(tr, spec, mood)
+      Just(g)  -> current-frame-of(g, now * speed-mul(level))
+      Nothing  -> Nothing
   val bg-frame = match pick-active-background(tr, bg, sd)
     Just(bgg) -> current-frame-of(bgg, now)
     Nothing   -> Nothing
@@ -455,10 +462,18 @@ fun arena-pixel(layout : home-layout, bg-frame : maybe<decoded-frame>,
       val ar = layout.arena-rect
       val rw = rect-w(ar)
       val rh = rect-h(ar)
-      val target-h-raw = (rh * 70) / 100
-      val target-h     = if target-h-raw < 32 then 32 else target-h-raw
-      val target-w     = if gh <= 0 then target-h
-                         else (gw * target-h) / gh
+      // Aspect-fit the sprite into the arena with a generous-but-
+      // bounded box: at most 60% of arena width AND 65% of arena
+      // height. The previous version only clamped height, which let
+      // wide sprites (e.g. thorn-dragon's 90px attack pose) overflow
+      // the arena horizontally and bleed onto the cards.
+      val box-w-cap = (rw * 60) / 100
+      val box-h-cap = (rh * 65) / 100
+      val sx100 = if gw <= 0 then 100 else (box-w-cap * 100) / gw
+      val sy100 = if gh <= 0 then 100 else (box-h-cap * 100) / gh
+      val s100  = if sx100 < sy100 then sx100 else sy100
+      val target-w = (gw * s100) / 100
+      val target-h = (gh * s100) / 100
       val dx0 = ar.x0 + (rw - target-w) / 2
       val dy0 = layout.floor-y - target-h + bounce
       if xx < dx0 || xx >= dx0 + target-w || yy < dy0 || yy >= dy0 + target-h then
@@ -468,7 +483,12 @@ fun arena-pixel(layout : home-layout, bg-frame : maybe<decoded-frame>,
         val gy = ((yy - dy0) * gh) / target-h
         match f.pixels.at(gy * gw + gx)
           Just(pi) -> match f.palette.at(pi)
-            Just(c) -> c
+            Just(c) ->
+              // Honour palette transparency: an alpha-zero entry
+              // (set by `runtime/decode-frame-of` when GCE marks
+              // this index transparent) means "show the layer
+              // below". Drop in the background pixel instead.
+              if (c % 256) == 0 then base else c
             Nothing -> base
           Nothing -> base
 

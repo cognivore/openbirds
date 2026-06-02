@@ -378,11 +378,7 @@ test-ui-cards: ios-build
     XCRESULT=$(ls -dt build/ios-derived/Logs/Test/*.xcresult | head -1); \
     mkdir -p build/ios-sim/ui-shots; \
     xcrun xcresulttool export attachments --path "$XCRESULT" --output-path build/ios-sim/ui-shots/ > /dev/null; \
-    python3 -c 'import json,sys,os,shutil; \
-m=json.load(open("build/ios-sim/ui-shots/manifest.json")); \
-[ (shutil.copy("build/ios-sim/ui-shots/"+a["exportedFileName"], \
-                "build/ios-sim/ui-shots/"+(a.get("suggestedHumanReadableName") or a["exportedFileName"]))) \
-  for e in m for a in e.get("attachments",[]) if a.get("exportedFileName") ]'; \
+    python3 scripts/xcresult-rename.py build/ios-sim/ui-shots/; \
     echo "screenshots: build/ios-sim/ui-shots/card-*.png"; \
     ls build/ios-sim/ui-shots/card-*.png
 

@@ -1,82 +1,105 @@
-// koka/tamagotchi.kk — tamagotchi roster + per-launch random pick.
+// koka/tamagotchi.kk — tamagotchi roster + per-launch random pick +
+// per-mood GIF lookup.
 //
-// One of the openbirds compliance rules is "make the same Koka brain
-// drive every platform". The brain owns *which* tamagotchi the user
-// meets today. The bridge pushes a 64-bit RNG seed at launch
-// (Swift / Kotlin generate it from the OS); the brain reduces it
-// modulo the live roster size to pick the slot for the entire
-// session.
+// The brain owns *which* tamagotchi the user meets today AND which
+// of three mood animations (idle / happy / ecstatic) plays right
+// now. The bridge pushes a 64-bit RNG seed at launch; the brain
+// reduces it modulo the live roster size to pick one spec for the
+// session, and per frame the renderer asks for the GIF matching
+// the current `happiness-level` of the tasks cell.
 //
-// The roster is a public, version-controlled list of slot keys —
-// matching the filename stems that `host/ios/Resources/tamagotchis/`
-// supplies. The brain has no idea what the GIF bytes look like; it
-// just stores them in a `loaded-gif` (the same struct the legacy
-// Lucile path uses) and asks `runtime/current-frame-of` for the
-// active frame per tick.
+// Roster storage: a single `tamagotchi-roster` cell holds N×3
+// loaded GIFs keyed by `<slot>-<mood>` strings (e.g.
+// "mushroom-monster-idle", "mushroom-monster-happy",
+// "mushroom-monster-ecstatic"). `pick-active(seed)` returns the
+// spec whose idle slot has loaded; `lookup-mood-gif(spec, mood)`
+// returns the GIF for the requested mood, with a fallback chain
+// to idle when an animation hasn't loaded yet.
 //
 // EFFECTS — pure / total roster declarations; `<read<global>>` for
-// lookups; `<read<global>, write<global>, alloc<global>, pure>` for
-// loads. The cell type itself is allocated once at session start by
-// the bridge and threaded into `frame-rgba` per frame.
+// lookups; `<read<global>, write<global>, alloc<global>, pure>`
+// for loads.
 
 module tamagotchi
 
 import std/num/int64
 import runtime
 
-// One slot in the roster: the asset key (filename stem the bridge
-// uses when loading) plus a user-friendly display name we'll wire
-// to the celebration banner once typography is on the home screen,
-// PLUS the background slot the tamagotchi lives against. The
-// background is bundled in a sibling roster (same shape) so the
-// renderer can compose `bg + sprite + cards` per frame; coupling
-// it to the spec means every per-launch pick decides BOTH the
-// creature AND the environment as a single thematic unit.
+// Per-character spec. The spec is purely metadata — the actual
+// GIF bytes for each mood live in `tamagotchi-roster` keyed by
+// `<slot>-<mood>`. `background-slot` couples character → scene
+// so each per-launch pick lands a thematic (creature, biome)
+// pairing rather than two independent rolls.
 pub value struct tamagotchi-spec
   slot              : string
   display-name      : string
   background-slot   : string
 
-// The canonical roster. Six entries today, matching the bundled
-// sample GIFs under `host/ios/Resources/tamagotchis/` and the
-// bundled background mockups under `host/ios/Resources/backgrounds/`.
-// Adding a new tamagotchi is three steps: drop a GIF into
-// Resources/tamagotchis/, drop a matching scene GIF into
-// Resources/backgrounds/, then append a `Tamagotchi-spec` here.
+// Canonical roster. Six entries today, drawn from the forest-
+// monsters + flying-forest-monsters packs — each character ships
+// with separate Idle / Run / Attack sprite strips (vs. Mana Seed
+// which packs many animations into one 8×8 grid), so the per-
+// mood GIFs are genuinely different loops rather than speed-
+// modulated copies of one cycle.
+//
+// Adding a tamagotchi: drop three GIFs into
+// host/ios/Resources/tamagotchis/ named `<slot>-{idle,happy,
+// ecstatic}.gif`, drop a matching scene GIF into
+// host/ios/Resources/backgrounds/, then append a `Tamagotchi-spec`
+// here. The bundle script `scripts/bundle-tamagotchi-assets.py`
+// is the canonical way to regenerate.
 pub val roster : list<tamagotchi-spec> = [
-  Tamagotchi-spec("moody-mushroom",    "Moody Mushroom", "autumn-forest"),
-  Tamagotchi-spec("slippery-slime",    "Slippery Slime", "muddy-cave"),
-  Tamagotchi-spec("greedy-gremlin",    "Greedy Gremlin", "winter-forest"),
-  Tamagotchi-spec("livestock-cow",     "Bovi",           "summer-forest"),
-  Tamagotchi-spec("livestock-chicken", "Cluckers",       "spring-forest"),
-  Tamagotchi-spec("livestock-pig",     "Hambo",          "autumn-forest")
+  Tamagotchi-spec("mushroom-monster", "Mushroom Monster", "lone-tree"),
+  Tamagotchi-spec("bush-monster",     "Bush Monster",     "sky-castles"),
+  Tamagotchi-spec("green-slime",      "Green Slime",      "desktop-cat"),
+  Tamagotchi-spec("shroom-walker",    "Shroom Walker",    "rocket"),
+  Tamagotchi-spec("thorn-dragon",     "Thorn Dragon",     "tractor"),
+  Tamagotchi-spec("leaf-wyrm",        "Leaf Wyrm",        "castle-hill")
 ]
 
-// --- loaded-GIF storage ---------------------------------------------------
+// --- mood mapping --------------------------------------------------------
 //
-// One mutable cell carrying every loaded tamagotchi GIF, keyed by
-// slot. The list is head-most-recent so re-loading a slot just
-// shadows the older entry (the GC reclaims when no caller still
-// holds the old `loaded-gif`).
+// Three discrete moods drive the animation switch. The bundle
+// pre-renders one GIF per (slot, mood) pair; the renderer asks
+// `mood-name(happiness-level)` for the current key, then
+// `lookup-mood-gif` for the actual GIF.
+//
+//   level 0  → "idle"      no tasks done, gentle breathing
+//   level 1  → "happy"     one task done, the pet looks alive
+//   level 2  → "happy"     two tasks done — same loop, runs faster
+//   level 3  → "ecstatic"  all three done, the attack/cheer loop
+//
+// Levels 1 and 2 share a clip because we wanted the user to feel
+// a visible mood change at level 1 (first task tap) without
+// requiring a separate "happier" animation per character. The
+// happiness `speed-mul` in `window/home` continues to amplify
+// loop tempo across the four levels so the second-task tap still
+// feels rewarding even though the clip is the same.
+
+pub fun mood-name(level : int) : string
+  match level
+    0 -> "idle"
+    1 -> "happy"
+    2 -> "happy"
+    _ -> "ecstatic"
+
+// --- GIF roster cell -----------------------------------------------------
+//
+// One mutable cell keyed by `<slot>-<mood>` strings. Bridge loads
+// each (slot, mood) pair as a separate FFI call; the brain
+// resolves the right key per frame.
 
 pub alias tamagotchi-roster = ref<global, list<(string, loaded-gif)>>
 
 pub fun new-tamagotchi-roster() : alloc<global> tamagotchi-roster
   ref([])
 
-// Parse the GIF bytes and register them under `slot`. A parse
-// failure (zero frames) silently drops the asset — the home
-// renderer treats a missing slot as "show the placeholder", which
-// is the correct degraded behaviour for an asset bundle that's
-// in the middle of loading.
 pub fun load-tamagotchi-slot(r : tamagotchi-roster, slot : string, bytes : vector<int>)
         : <pure, read<global>, write<global>, alloc<global>> ()
   match make-loaded-gif(bytes)
     Just(g) -> r := Cons((slot, g), !r)
     Nothing -> ()
 
-// First match wins (head is most recent). `Nothing` until the
-// bridge has loaded that slot.
 pub fun lookup-slot(r : tamagotchi-roster, slot : string)
         : <read<global>> maybe<loaded-gif>
   find-slot(!r, slot)
@@ -88,24 +111,7 @@ fun find-slot(xs : list<(string, loaded-gif)>, slot : string) : maybe<loaded-gif
       if k == slot then Just(g)
       else find-slot(rest, slot)
 
-// How many roster entries currently have a loaded GIF. Used by
-// the bridge as a "are we ready?" signal — the home screen only
-// drops out of the loading scene once this is > 0.
-pub fun loaded-count(r : tamagotchi-roster) : <read<global>> int
-  loaded-count-loop(roster, !r, 0)
-
-fun loaded-count-loop(specs : list<tamagotchi-spec>,
-                      loaded : list<(string, loaded-gif)>,
-                      acc : int) : int
-  match specs
-    Nil -> acc
-    Cons(t, rest) ->
-      val hit = match find-slot(loaded, t.slot)
-        Just(_) -> True
-        Nothing -> False
-      loaded-count-loop(rest, loaded, if hit then acc + 1 else acc)
-
-// --- per-launch RNG seed cell ---------------------------------------------
+// --- per-launch RNG seed cell --------------------------------------------
 
 pub alias seed-cell = ref<global, int64>
 
@@ -118,40 +124,33 @@ pub fun set-seed(c : seed-cell, s : int64) : <read<global>, write<global>> ()
 pub fun get-seed(c : seed-cell) : <read<global>> int64
   !c
 
-// --- active selection -----------------------------------------------------
-//
-// "Active" = the spec the user is interacting with this session.
-// We compute it on the fly from the seed + the *currently loaded*
-// roster entries. If only three of six have loaded so far, the
-// modulo distributes across those three, so a half-loaded launch
-// still picks a valid character.
+// --- live roster + per-launch pick --------------------------------------
 
-// Build the list of `(spec, gif)` pairs that have a loaded asset,
-// preserving the canonical roster order so the seed → slot map is
-// stable across launches as long as the same set of assets is
-// present. Exposed so the bridge can ask "how many candidates do
-// I have to choose from?".
+// Specs whose `<slot>-idle.gif` has been loaded. Idle is the
+// required mood — without it the renderer has nothing to show, so
+// it's the gating signal for "this character is ready to be
+// chosen". Happy and ecstatic load asynchronously and fall back
+// to idle when missing.
 pub fun live-roster(r : tamagotchi-roster)
-        : <read<global>> list<(tamagotchi-spec, loaded-gif)>
+        : <read<global>> list<tamagotchi-spec>
   live-roster-loop(roster, !r, [])
 
 fun live-roster-loop(specs : list<tamagotchi-spec>,
                      loaded : list<(string, loaded-gif)>,
-                     acc : list<(tamagotchi-spec, loaded-gif)>)
-        : list<(tamagotchi-spec, loaded-gif)>
+                     acc : list<tamagotchi-spec>)
+        : list<tamagotchi-spec>
   match specs
     Nil -> acc.reverse
     Cons(t, rest) ->
-      match find-slot(loaded, t.slot)
-        Just(g) -> live-roster-loop(rest, loaded, Cons((t, g), acc))
+      match find-slot(loaded, t.slot ++ "-idle")
+        Just(_) -> live-roster-loop(rest, loaded, Cons(t, acc))
         Nothing -> live-roster-loop(rest, loaded, acc)
 
-// Pick the active `(spec, gif)` for the given seed. Returns
-// `Nothing` if no assets are loaded yet (= we're still in the
-// loading screen). Stable across calls within a session as long
-// as the loaded-set doesn't change.
+// Pick the active spec deterministically from the seed +
+// currently-live roster. Returns `Nothing` if no characters have
+// loaded yet (= we're still in the Loading scene).
 pub fun pick-active(r : tamagotchi-roster, seed : int64)
-        : <read<global>> maybe<(tamagotchi-spec, loaded-gif)>
+        : <read<global>> maybe<tamagotchi-spec>
   val live = live-roster(r)
   match live
     Nil -> Nothing
@@ -159,40 +158,35 @@ pub fun pick-active(r : tamagotchi-roster, seed : int64)
       val n  = xs.length
       val s  = seed-to-nonneg-int(seed)
       val ix = s % n
-      // `list.at` isn't a thing; drop to the index and grab head.
-      // Inlined here to avoid a cross-module helper for one call.
       match xs.drop(ix)
         Cons(p, _) -> Just(p)
         Nil        -> Nothing
 
-// Reduce a 64-bit seed to a non-negative `int` index. Koka's `int`
-// is arbitrary-precision, so the cast in `int64.int` is total; we
-// then sign-strip so `%` produces a valid roster index.
 fun seed-to-nonneg-int(s : int64) : int
   val i = s.int
   if i < 0 then 0 - i else i
 
-// Convenience for the bridge: which slot stem will be active for
-// the current seed? Returns "" if no live roster — the bridge's
-// diagnostic logging consumes the result without unwrapping
-// `maybe`.
+// Look up the GIF for (spec, mood) with a fallback chain so the
+// renderer always has SOMETHING to show as long as at least the
+// idle has loaded for this slot. Resolution order:
+//
+//   1. `<slot>-<mood>`   — the requested mood
+//   2. `<slot>-idle`     — fallback when the variant hasn't loaded
+//   3. Nothing           — slot completely empty
+pub fun lookup-mood-gif(r : tamagotchi-roster, spec : tamagotchi-spec, mood : string)
+        : <read<global>> maybe<loaded-gif>
+  match lookup-slot(r, spec.slot ++ "-" ++ mood)
+    Just(g) -> Just(g)
+    Nothing -> lookup-slot(r, spec.slot ++ "-idle")
+
+// Convenience for the bridge diagnostic: which spec is active?
+// Returns "" if nothing loaded yet.
 pub fun active-slot(r : tamagotchi-roster, seed : int64) : <read<global>> string
   match pick-active(r, seed)
-    Just((t, _)) -> t.slot
-    Nothing      -> ""
+    Just(t) -> t.slot
+    Nothing -> ""
 
 // --- background roster ---------------------------------------------------
-//
-// Same shape and load semantics as the tamagotchi roster — slot
-// names match the canonical `background-slot` values referenced
-// from the tamagotchi `roster` above. The renderer looks up the
-// active tamagotchi's background and, if loaded, paints it
-// behind the sprite + cards.
-//
-// Modelled as a separate cell (rather than re-using
-// tamagotchi-roster) so the bridge can load characters and
-// scenery on independent code paths and so the type carries
-// intent (= "this list holds scenery, not sprites").
 
 pub alias background-roster = ref<global, list<(string, loaded-gif)>>
 
@@ -209,14 +203,13 @@ pub fun lookup-background(r : background-roster, slot : string)
         : <read<global>> maybe<loaded-gif>
   find-slot(!r, slot)
 
-// Pick the active background for the current seed by routing
-// through the active tamagotchi-spec, then resolving the spec's
-// `background-slot` in the background roster. Returns `Nothing`
-// if either lookup fails — the renderer falls back to the home
-// theme's painted sky.
+// Pick the active background by routing through the active spec's
+// paired `background-slot`. Returns `Nothing` if either side
+// hasn't loaded; the renderer paints the home theme's bg-sky as
+// the fallback.
 pub fun pick-active-background(tg : tamagotchi-roster, bg : background-roster,
                                 seed : int64)
         : <read<global>> maybe<loaded-gif>
   match pick-active(tg, seed)
     Nothing -> Nothing
-    Just((t, _)) -> lookup-background(bg, t.background-slot)
+    Just(t) -> lookup-background(bg, t.background-slot)

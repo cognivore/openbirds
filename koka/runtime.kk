@@ -98,6 +98,13 @@ pub fun load-gif(s : session, bytes : vector<int>)
 // Pre-packs the palette into `vector<int>` (one packed RGBA per
 // entry) so the per-pixel render path can read a single immediate
 // int per pixel — no `Rgba` struct allocations in the hot loop.
+//
+// Transparency: if the frame's Graphic Control Extension specifies
+// a transparent palette index, that entry is packed as 0
+// (0x00000000 — alpha byte = 0). The renderer treats any palette
+// value with alpha < 8 as "show the layer below" and composites
+// the background pixel in its place. Every other palette entry
+// stays at alpha=255 (fully opaque).
 fun decode-frame-of(g : gif, f : gif-frame) : pure decoded-frame
   val gw = f.desc.width.pixels
   val gh = f.desc.height.pixels
@@ -108,8 +115,14 @@ fun decode-frame-of(g : gif, f : gif-frame) : pure decoded-frame
     Nothing -> match g.global-palette
       Just(p) -> p
       Nothing -> Palette([])
-  val pal-vec = pal-list.entries.map fn(t)
-    pack-rgb(t.red.byte, t.green.byte, t.blue.byte)
+  // -1 sentinel when no transparent index — never matches a real
+  // palette index in [0, 255].
+  val trans-ix = match f.control-ext
+    Just(gce) -> match gce.transparent-ix
+      Just(ti) -> ti.ix
+      Nothing  -> 0 - 1
+    Nothing -> 0 - 1
+  val pal-vec = pal-list.entries.map-index-zero(0, trans-ix)
   val pixel-vec = if f.desc.packed.interlaced
     then deinterlace(decoded, gw, gh)
     else decoded
@@ -120,6 +133,18 @@ fun decode-frame-of(g : gif, f : gif-frame) : pure decoded-frame
     pixels   = pixel-vec,
     delay-cs = frame-delay-cs(f)
   )
+
+// Map each palette entry to a packed RGBA, replacing the entry at
+// `trans-ix` with 0 (fully transparent). Recursion is direct self-
+// tail so Koka emits a tight loop.
+fun map-index-zero(xs : list<rgb-triple>, ix : int, trans-ix : int)
+        : pure list<int>
+  match xs
+    Nil -> Nil
+    Cons(t, rest) ->
+      val v = if ix == trans-ix then 0
+              else pack-rgb(t.red.byte, t.green.byte, t.blue.byte)
+      Cons(v, map-index-zero(rest, ix + 1, trans-ix))
 
 // Pack three 0..255 RGB ints + opaque alpha into 0xRRGGBBAA.
 // Local helper so framebuffer's `pack-rgba` doesn't need to know
