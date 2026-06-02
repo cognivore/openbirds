@@ -22,24 +22,33 @@ import CBridge
 
 @main
 struct OpenbirdsApp: App {
+    // Tamagotchi slot stems — must match `Tamagotchi-spec.slot`
+    // entries in `koka/tamagotchi.kk`'s roster. Each maps to
+    // `Resources/tamagotchis/<slot>.gif`. Adding a tamagotchi:
+    // drop a GIF, add a line here, add the spec entry on the
+    // Koka side. Three sources of truth share the slot string —
+    // keep them in sync.
+    private static let tamagotchiSlots: [String] = [
+        "moody-mushroom",
+        "slippery-slime",
+        "greedy-gremlin",
+        "livestock-cow",
+        "livestock-chicken",
+        "livestock-pig",
+    ]
+
+    // Background slot stems — must match the `background-slot`
+    // fields in the Koka roster. Each maps to
+    // `Resources/backgrounds/<slot>.gif`.
+    private static let backgroundSlots: [String] = [
+        "spring-forest",
+        "summer-forest",
+        "autumn-forest",
+        "winter-forest",
+        "muddy-cave",
+    ]
+
     init() {
-        // Read the bundled lucile.gif bytes into memory on the main
-        // thread (cheap — just a memory map / disk read), then ship
-        // the actual parse + LZW-decode work to a background queue.
-        // openbirds_load_gif on a 4 MB animated GIF takes seconds;
-        // doing it inline would freeze the launch UI past iOS's
-        // unresponsive-launch watchdog. The bridge serialises Koka
-        // calls with a mutex; render uses trylock so it stays smooth
-        // (showing a placeholder) while load runs.
-        if let url = Bundle.main.url(forResource: "lucile", withExtension: "gif"),
-           let data = try? Data(contentsOf: url) {
-            DispatchQueue.global(qos: .userInitiated).async {
-                data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-                    guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
-                    openbirds_load_gif(base, Int32(data.count))
-                }
-            }
-        }
         // Bundle all five TYP-SRS-001 typefaces. Names match the
         // string Koka's `typography_page.kk` looks up in the registry.
         loadBundledFont(name: "Terminus",          file: "TerminusTTF.ttf",                fallbacks: ["TerminusTTF-Bold-Nerd-Font-Complete.ttf"])
@@ -47,6 +56,70 @@ struct OpenbirdsApp: App {
         loadBundledFont(name: "Jost",              file: "Jost-Medium.ttf",                fallbacks: ["Jost-VariableFont_wght.ttf"])
         loadBundledFont(name: "CormorantGaramond", file: "CormorantGaramond-Regular.ttf",  fallbacks: [])
         loadBundledFont(name: "TerminalGrotesque", file: "terminal-grotesque.ttf",         fallbacks: [])
+
+        // Push a fresh per-launch RNG seed BEFORE loading the
+        // tamagotchi GIFs so the brain's `pick-active(roster, seed)`
+        // is stable from the first frame after a load completes
+        // (no flicker between "no seed → default slot 0" and the
+        // user's actual choice).
+        let seed: UInt64 = .random(in: .min ... .max)
+        NSLog("openbirds.app.seed: 0x%llx", seed)
+        openbirds_set_rng_seed(seed)
+
+        // Load every tamagotchi + background slot from the bundle.
+        // All loads go to a background queue so the launch UI
+        // stays responsive — the bridge's mutex serialises with
+        // the render path. Loading-state placeholder paints while
+        // the work runs.
+        for slot in Self.tamagotchiSlots {
+            loadBundledGif(slot: slot, subdir: "tamagotchis") { base, count in
+                slot.withCString { csl in
+                    openbirds_load_tamagotchi(csl, base, count)
+                }
+            }
+        }
+        for slot in Self.backgroundSlots {
+            loadBundledGif(slot: slot, subdir: "backgrounds") { base, count in
+                slot.withCString { csl in
+                    openbirds_load_background(csl, base, count)
+                }
+            }
+        }
+
+        // Kick off the loading celebration. The brain auto-
+        // transitions to the home (Idle) scene after the duration
+        // elapses. 3 seconds is the spec; long enough to read the
+        // sprite, short enough not to annoy on repeat launches.
+        // We schedule a tick on the global queue so the bg
+        // load + celebration scheduling don't fight for the
+        // bridge mutex on the same thread.
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.05) {
+            let now = CFAbsoluteTimeGetCurrent() - FramebufferView.startTime
+            openbirds_begin_celebration(now, 3.0)
+        }
+    }
+
+    // Load a bundled GIF resource by name. The bundle layout for
+    // copied resource folders preserves the subdirectory in
+    // `bundle.url(forResource:, withExtension:, subdirectory:)`.
+    // If the bundle copied as a flat list, we fall back to a
+    // top-level lookup so the build works under both
+    // `xcodebuild` copy-resources styles.
+    private func loadBundledGif(slot: String, subdir: String,
+                                _ apply: @escaping (UnsafePointer<UInt8>, Int32) -> Void) {
+        let bundle = Bundle.main
+        let url = bundle.url(forResource: slot, withExtension: "gif", subdirectory: subdir)
+                  ?? bundle.url(forResource: slot, withExtension: "gif")
+        guard let actual = url, let data = try? Data(contentsOf: actual) else {
+            NSLog("openbirds.load: missing GIF for %@/%@.gif", subdir, slot)
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+                apply(base, Int32(data.count))
+            }
+        }
     }
 
     private func loadBundledFont(name: String, file: String, fallbacks: [String]) {

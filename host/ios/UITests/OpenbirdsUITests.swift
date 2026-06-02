@@ -94,12 +94,64 @@ final class ScrollAndCloseTest: XCTestCase {
         XCTAssertTrue(exited, "Expected app to terminate after CLOSE tap; state was \(app.state.rawValue)")
     }
 
+    // Tap each of the three home-screen task cards in turn and
+    // verify the per-frame render reflects the new task state via
+    // attached screenshots. This is the end-to-end proof that the
+    // tap → bridge → `handle-home-tap` → `toggle-task` → next-frame
+    // `card-pixel` path is wired correctly through the framebuffer.
+    // Save the screenshots to disk so a human can eyeball the
+    // indicator-fill progression.
+    func testTapCardsTogglesIndicators() throws {
+        let app = XCUIApplication()
+        app.launch()
+        // Wait for the load celebration (3 s) plus a comfortable
+        // buffer for the Loading → Celebrating → Idle transitions.
+        sleep(4)
+
+        attachScreenshot(app, name: "card-00-home-before")
+        saveScreenshot(app, name: "card-00-home-before")
+
+        // Card 1 ~ 65% of viewport height, centered.
+        let card1 = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.65))
+        card1.tap()
+        usleep(400_000)
+        attachScreenshot(app, name: "card-01-after-tap1")
+        saveScreenshot(app, name: "card-01-after-tap1")
+
+        // Card 2 ~ 76%.
+        let card2 = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.76))
+        card2.tap()
+        usleep(400_000)
+        attachScreenshot(app, name: "card-02-after-tap2")
+        saveScreenshot(app, name: "card-02-after-tap2")
+
+        // Card 3 ~ 87%.
+        let card3 = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.87))
+        card3.tap()
+        usleep(400_000)
+        attachScreenshot(app, name: "card-03-after-tap3")
+        saveScreenshot(app, name: "card-03-after-tap3")
+    }
+
     private func attachScreenshot(_ app: XCUIApplication, name: String) {
         let ss = app.screenshot()
         let attachment = XCTAttachment(screenshot: ss)
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+
+    // Persist a screenshot to a path the host can read after the
+    // test run. Directory must be created externally — XCUITest
+    // sandboxing limits where the test bundle can write, but
+    // `/tmp/openbirds-ui-shots/` is writable from the simulator.
+    private func saveScreenshot(_ app: XCUIApplication, name: String) {
+        let ss = app.screenshot()
+        let dir = "/tmp/openbirds-ui-shots"
+        try? FileManager.default.createDirectory(atPath: dir,
+            withIntermediateDirectories: true)
+        let url = URL(fileURLWithPath: "\(dir)/\(name).png")
+        try? ss.pngRepresentation.write(to: url)
     }
 
     // XCUIApplication.state caches; the official wait API forces a

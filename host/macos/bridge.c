@@ -105,6 +105,41 @@ extern kk_unit_t kk_app_set_spec(kk_ref_t c,
     kk_integer_t corner_radius, double density,
     kk_context_t* _ctx);
 
+// --- tamagotchi-MVP extern declarations -----------------------------------
+//
+// The home screen reads from four new process-lifetime cells —
+// roster of loaded tamagotchi GIFs, parallel background GIFs,
+// 64-bit seed for the per-launch pick, three-card task state.
+// Bodies live in `koka/tamagotchi.kk`, `koka/tasks.kk`,
+// `koka/scene.kk`, `koka/app.kk`. Mangling is `kk_<module>_<fn>`
+// with dashes → underscores.
+extern kk_ref_t  kk_tamagotchi_new_tamagotchi_roster(kk_context_t* _ctx);
+extern kk_unit_t kk_tamagotchi_load_tamagotchi_slot(
+    kk_ref_t r, kk_string_t slot, kk_vector_t bytes, kk_context_t* _ctx);
+extern kk_ref_t  kk_tamagotchi_new_background_roster(kk_context_t* _ctx);
+extern kk_unit_t kk_tamagotchi_load_background_slot(
+    kk_ref_t r, kk_string_t slot, kk_vector_t bytes, kk_context_t* _ctx);
+extern kk_ref_t  kk_tamagotchi_new_seed_cell(kk_context_t* _ctx);
+extern kk_unit_t kk_tamagotchi_set_seed(kk_ref_t c, int64_t s, kk_context_t* _ctx);
+extern kk_string_t kk_tamagotchi_active_slot(kk_ref_t r, int64_t seed, kk_context_t* _ctx);
+extern kk_ref_t  kk_tasks_new_tasks_cell(kk_context_t* _ctx);
+extern kk_unit_t kk_scene_begin_celebration(
+    kk_ref_t s, double now, double duration, kk_context_t* _ctx);
+extern kk_unit_t kk_scene_force_home(kk_ref_t s, kk_context_t* _ctx);
+extern kk_unit_t kk_app_handle_home_tap(
+    kk_ref_t sc, kk_ref_t tc, kk_ref_t spec,
+    kk_integer_t vx, kk_integer_t vy, kk_context_t* _ctx);
+
+// The 4 new ref-cells thread into `kk_app_frame_rgba`'s arg list,
+// after the existing 7-ref signature. Forward-declare the
+// updated signature so the call site below type-checks against
+// the generated Koka header.
+extern kk_vector_t kk_app_frame_rgba(
+    kk_ref_t s, kk_ref_t sc, kk_ref_t fonts, kk_ref_t gc,
+    kk_ref_t sr, kk_ref_t pc, kk_ref_t spec,
+    kk_ref_t tr, kk_ref_t bg, kk_ref_t seed, kk_ref_t tc,
+    double now, kk_context_t* _ctx);
+
 // --- session lifecycle ------------------------------------------------------
 
 static kk_context_t* g_ctx              = NULL;
@@ -122,6 +157,20 @@ static kk_ref_t      g_pcache;
 static bool          g_pcache_init      = false;
 static kk_ref_t      g_spec;
 static bool          g_spec_init        = false;
+static kk_ref_t      g_tamagotchi;
+static bool          g_tamagotchi_init  = false;
+static kk_ref_t      g_background;
+static bool          g_background_init  = false;
+static kk_ref_t      g_seed;
+static bool          g_seed_init        = false;
+static kk_ref_t      g_tasks;
+static bool          g_tasks_init       = false;
+
+// Mirror of the most recently set RNG seed. The Koka side has the
+// authoritative seed in `g_seed`, but reading it back across the
+// FFI requires a `get-seed` extern — for the lightweight
+// diagnostic in `openbirds_active_slot` we just stash a copy here.
+static int64_t       g_seed_mirror      = 0;
 
 static kk_context_t* ensure_ctx(void) {
     if (g_ctx == NULL) {
@@ -179,6 +228,38 @@ static kk_ref_t borrow_spec(kk_context_t* ctx) {
     return kk_ref_dup(g_spec, ctx);
 }
 
+static kk_ref_t borrow_tamagotchi(kk_context_t* ctx) {
+    if (!g_tamagotchi_init) {
+        g_tamagotchi      = kk_tamagotchi_new_tamagotchi_roster(ctx);
+        g_tamagotchi_init = true;
+    }
+    return kk_ref_dup(g_tamagotchi, ctx);
+}
+
+static kk_ref_t borrow_background(kk_context_t* ctx) {
+    if (!g_background_init) {
+        g_background      = kk_tamagotchi_new_background_roster(ctx);
+        g_background_init = true;
+    }
+    return kk_ref_dup(g_background, ctx);
+}
+
+static kk_ref_t borrow_seed(kk_context_t* ctx) {
+    if (!g_seed_init) {
+        g_seed      = kk_tamagotchi_new_seed_cell(ctx);
+        g_seed_init = true;
+    }
+    return kk_ref_dup(g_seed, ctx);
+}
+
+static kk_ref_t borrow_tasks(kk_context_t* ctx) {
+    if (!g_tasks_init) {
+        g_tasks      = kk_tasks_new_tasks_cell(ctx);
+        g_tasks_init = true;
+    }
+    return kk_ref_dup(g_tasks, ctx);
+}
+
 // Lazily create the Koka-side session ref the first time something
 // needs it (load-gif or render). The bridge holds ONE reference for
 // the process lifetime; per-call we `kk_ref_dup` so each Koka call
@@ -221,6 +302,22 @@ void openbirds_shutdown(void) {
         if (g_spec_init) {
             kk_ref_drop(g_spec, g_ctx);
             g_spec_init = false;
+        }
+        if (g_tamagotchi_init) {
+            kk_ref_drop(g_tamagotchi, g_ctx);
+            g_tamagotchi_init = false;
+        }
+        if (g_background_init) {
+            kk_ref_drop(g_background, g_ctx);
+            g_background_init = false;
+        }
+        if (g_seed_init) {
+            kk_ref_drop(g_seed, g_ctx);
+            g_seed_init = false;
+        }
+        if (g_tasks_init) {
+            kk_ref_drop(g_tasks, g_ctx);
+            g_tasks_init = false;
         }
         kk_hello__main__done(g_ctx);
         kk_main_end(g_ctx);
@@ -351,6 +448,10 @@ void openbirds_render_frame(double now_seconds,
     kk_ref_t      sr  = borrow_scroll(ctx);
     kk_ref_t      pc  = borrow_pcache(ctx);
     kk_ref_t      spec = borrow_spec(ctx);
+    kk_ref_t      tr   = borrow_tamagotchi(ctx);
+    kk_ref_t      bg   = borrow_background(ctx);
+    kk_ref_t      seed = borrow_seed(ctx);
+    kk_ref_t      tc   = borrow_tasks(ctx);
 
     // Refresh the viewport-spec for this frame. Cheap (heap
     // allocation of one struct + one ref-set); the page-cache
@@ -366,7 +467,9 @@ void openbirds_render_frame(double now_seconds,
         density,
         ctx);
 
-    kk_vector_t  v = kk_app_frame_rgba(s, sc, fr, gc, sr, pc, spec, now_seconds, ctx);
+    kk_vector_t  v = kk_app_frame_rgba(s, sc, fr, gc, sr, pc, spec,
+                                       tr, bg, seed, tc,
+                                       now_seconds, ctx);
 
     kk_ssize_t len = 0;
     const kk_box_t* boxes = kk_vector_buf_borrow(v, &len, ctx);
@@ -467,12 +570,24 @@ void openbirds_tap(int32_t x, int32_t y,
         kk_string_drop(ds, ctx);
     }
 
-    // The actual dispatch: scroll-aware tap → scene transition.
+    // Two dispatchers:
+    //   1. Legacy scroll-aware tap → exit-via-close-rect transition.
+    //      No-op in the home scene because the page-cache is empty
+    //      (no typography page is composed). Kept for backwards
+    //      compatibility with the legacy demo / XCUITest.
     kk_app_handle_tap_scrolled(
         borrow_scene(ctx), borrow_scroll(ctx), borrow_pcache(ctx), borrow_spec(ctx),
         kk_integer_from_int32(x, ctx),
         kk_integer_from_int32(y, ctx),
         exit_at_s, ctx);
+    //   2. Home-scene card toggle. Computes the home layout for the
+    //      current viewport-spec, hit-tests the three card rects,
+    //      and flips the matching task. No-op outside Idle.
+    kk_app_handle_home_tap(
+        borrow_scene(ctx), borrow_tasks(ctx), borrow_spec(ctx),
+        kk_integer_from_int32(x, ctx),
+        kk_integer_from_int32(y, ctx),
+        ctx);
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -523,4 +638,83 @@ void openbirds_pan_end(double t) {
     kk_integer_drop(syk, ctx);
     os_log(OS_LOG_DEFAULT, "openbirds.bridge.pan-end t=%.3f scroll-y=%d", t, sy);
     pthread_mutex_unlock(&g_lock);
+}
+
+// --- tamagotchi MVP bridge surface -----------------------------------------
+
+void openbirds_load_tamagotchi(const char* slot,
+                               const uint8_t* bytes, int32_t len) {
+    if (slot == NULL || bytes == NULL || len <= 0) return;
+    pthread_mutex_lock(&g_lock);
+    kk_context_t* ctx = ensure_ctx();
+    kk_ref_t      r   = borrow_tamagotchi(ctx);
+    kk_string_t   ks  = kk_string_alloc_from_utf8(slot, ctx);
+    kk_vector_t   kv  = bytes_to_vector_int(bytes, len, ctx);
+    kk_tamagotchi_load_tamagotchi_slot(r, ks, kv, ctx);
+    pthread_mutex_unlock(&g_lock);
+    fprintf(stderr, "[openbirds] load_tamagotchi: slot=%s len=%d\n", slot, len);
+    fflush(stderr);
+}
+
+void openbirds_load_background(const char* slot,
+                               const uint8_t* bytes, int32_t len) {
+    if (slot == NULL || bytes == NULL || len <= 0) return;
+    pthread_mutex_lock(&g_lock);
+    kk_context_t* ctx = ensure_ctx();
+    kk_ref_t      r   = borrow_background(ctx);
+    kk_string_t   ks  = kk_string_alloc_from_utf8(slot, ctx);
+    kk_vector_t   kv  = bytes_to_vector_int(bytes, len, ctx);
+    kk_tamagotchi_load_background_slot(r, ks, kv, ctx);
+    pthread_mutex_unlock(&g_lock);
+    fprintf(stderr, "[openbirds] load_background: slot=%s len=%d\n", slot, len);
+    fflush(stderr);
+}
+
+void openbirds_set_rng_seed(uint64_t seed) {
+    pthread_mutex_lock(&g_lock);
+    kk_context_t* ctx = ensure_ctx();
+    kk_ref_t      c   = borrow_seed(ctx);
+    // Koka int64 maps to C int64_t; uint64_t → int64_t is
+    // implementation-defined reinterpretation, which is fine —
+    // any 64-bit value is a legal seed.
+    kk_tamagotchi_set_seed(c, (int64_t)seed, ctx);
+    g_seed_mirror = (int64_t)seed;
+    pthread_mutex_unlock(&g_lock);
+    fprintf(stderr, "[openbirds] set_rng_seed: seed=0x%llx\n",
+            (unsigned long long)seed);
+    fflush(stderr);
+}
+
+void openbirds_begin_celebration(double now_seconds, double duration_s) {
+    pthread_mutex_lock(&g_lock);
+    kk_context_t* ctx = ensure_ctx();
+    kk_ref_t      sc  = borrow_scene(ctx);
+    kk_scene_begin_celebration(sc, now_seconds, duration_s, ctx);
+    pthread_mutex_unlock(&g_lock);
+    os_log(OS_LOG_DEFAULT,
+        "openbirds.bridge.begin_celebration now=%.3f duration=%.3f",
+        now_seconds, duration_s);
+}
+
+void openbirds_force_home(void) {
+    pthread_mutex_lock(&g_lock);
+    kk_context_t* ctx = ensure_ctx();
+    kk_ref_t      sc  = borrow_scene(ctx);
+    kk_scene_force_home(sc, ctx);
+    pthread_mutex_unlock(&g_lock);
+}
+
+const char* openbirds_active_slot(void) {
+    pthread_mutex_lock(&g_lock);
+    kk_context_t* ctx = ensure_ctx();
+    kk_ref_t      r   = borrow_tamagotchi(ctx);
+    kk_string_t s = kk_tamagotchi_active_slot(r, g_seed_mirror, ctx);
+    kk_ssize_t len = 0;
+    const char* cbuf = kk_string_cbuf_borrow(s, &len, ctx);
+    char* out = (char*)malloc((size_t)len + 1);
+    memcpy(out, cbuf, (size_t)len);
+    out[len] = '\0';
+    kk_string_drop(s, ctx);
+    pthread_mutex_unlock(&g_lock);
+    return out;
 }

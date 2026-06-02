@@ -127,7 +127,7 @@ fun decode-frame-of(g : gif, f : gif-frame) : pure decoded-frame
 fun pack-rgb(rr : int, gg : int, bb : int) : int
   (rr * 16777216) + (gg * 65536) + (bb * 256) + 255
 
-fun parse-gif-from-vector(bytes : vector<int>) : pure gif
+pub fun parse-gif-from-vector(bytes : vector<int>) : pure gif
   val (ver, l, gp, r1) = parse-preamble(mk-reader-from-vector(bytes))
   val frames           = parse-blocks(r1, [], Nothing)
   Gif(ver, l, gp, frames)
@@ -226,6 +226,72 @@ pub fun store-pixels(s : session, ix : int, w : int, h : int, buf : vector<int>)
     Just(g) ->
       val cell = g.rendered
       cell := Just((ix, w, h, buf))
+
+// --- loaded-gif-keyed render path -----------------------------------------
+//
+// The session above wraps ONE loaded GIF (the Lucile goodbye legacy).
+// The home screen holds a roster of several GIFs, one per
+// tamagotchi slot, and needs the same lazy-decode + render cache
+// machinery to be addressable on a per-GIF basis. These helpers
+// expose exactly that surface so `tamagotchi.kk` can store its
+// loaded-gif values directly without each one needing its own
+// session ref.
+
+// Parse + prep a GIF from bytes without binding it to a session.
+// Allocates the two single-slot caches (decoded-frame, rendered-
+// pixels) so subsequent renders short-circuit. Returns `Nothing`
+// on a frame-less parse — the caller treats that as "asset
+// missing" and falls back to a placeholder.
+pub fun make-loaded-gif(bytes : vector<int>)
+        : <pure, alloc<global>> maybe<loaded-gif>
+  val g = parse-gif-from-vector(bytes)
+  match g.frames
+    Nil -> Nothing
+    _ ->
+      val total    = g.frames.foldl(0, fn(acc, f) acc + frame-delay-cs(f))
+      val cache    = ref(Nothing)
+      val rendered = ref(Nothing)
+      Just(Loaded-gif(g, total, cache, rendered))
+
+// Total animation duration of one loaded GIF in seconds.
+pub fun loaded-duration-s(g : loaded-gif) : float64
+  g.total-cs.float64 / 100.0
+
+// Active frame index for `now` seconds — the same modulo logic the
+// session-keyed `frame-ix-now` uses, factored out so home renders
+// can compute per-GIF speed-modulated indices.
+pub fun loaded-frame-ix(g : loaded-gif, now : float64) : pure int
+  val now-cs = (now * 100.0).floor.int
+  pick-frame-index(g.parsed.frames, g.total-cs, now-cs)
+
+// Resolve the decoded frame at `now`, hitting the per-GIF cache
+// when the index hasn't changed. Same shape as `current-frame` but
+// keyed by an explicit `loaded-gif` instead of a session cell.
+pub fun current-frame-of(g : loaded-gif, now : float64)
+        : <pure, read<global>, write<global>> maybe<decoded-frame>
+  val ix = loaded-frame-ix(g, now)
+  match !g.cache
+    Just((cached-ix, cached-f)) ->
+      if cached-ix == ix then Just(cached-f)
+      else decode-and-cache(g, ix)
+    Nothing -> decode-and-cache(g, ix)
+
+// `Just(buf)` if the GIF's render cache already holds packed-RGBA
+// pixels for exactly this (frame-ix, w, h). Used by the home
+// renderer to skip the per-pixel scale path when nothing has
+// changed.
+pub fun cached-pixels-of(g : loaded-gif, ix : int, w : int, h : int)
+        : <read<global>> maybe<vector<int>>
+  match !g.rendered
+    Just((cix, cw, ch, buf)) ->
+      if cix == ix && cw == w && ch == h then Just(buf) else Nothing
+    Nothing -> Nothing
+
+// Replace the GIF's rendered-pixel cache.
+pub fun store-pixels-of(g : loaded-gif, ix : int, w : int, h : int, buf : vector<int>)
+        : <read<global>, write<global>> ()
+  val cell = g.rendered
+  cell := Just((ix, w, h, buf))
 
 
 // --- GIF89a de-interlacing --------------------------------------------------

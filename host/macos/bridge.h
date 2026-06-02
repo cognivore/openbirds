@@ -112,6 +112,47 @@ void openbirds_pan_start(double x, double y, double t);
 void openbirds_pan_move (double y, double t);
 void openbirds_pan_end  (double t);
 
+// --- tamagotchi MVP (multi-pack roster + loading celebration) -------------
+//
+// The home screen reads from a process-lifetime "tamagotchi roster"
+// (slot → GIF bytes) plus a parallel "background roster" plus a
+// 64-bit RNG seed plus a tasks cell. Wire-up at launch:
+//
+//   1. For each tamagotchi GIF bundled under
+//      `Resources/tamagotchis/<slot>.gif`, call
+//      `openbirds_load_tamagotchi(<slot>, bytes, len)` from a
+//      background queue. `<slot>` must match a `Tamagotchi-spec.slot`
+//      in `koka/tamagotchi.kk`'s roster.
+//   2. For each background mockup under `Resources/backgrounds/
+//      <slot>.gif`, call `openbirds_load_background(...)`. `<slot>`
+//      must match a `Tamagotchi-spec.background-slot`.
+//   3. Once any tamagotchi slot has loaded, generate a fresh
+//      64-bit seed (host RNG of choice) and push via
+//      `openbirds_set_rng_seed`. The brain picks one slot for
+//      this session by reducing the seed modulo the live roster.
+//   4. Call `openbirds_begin_celebration(now_seconds, 3.0)` to
+//      transition Loading → Celebrating. The renderer plays the
+//      active tamagotchi fullscreen for the duration, then auto-
+//      transitions to Idle (the composed home layout).
+//
+// `bytes` is borrowed during each call only.
+void openbirds_load_tamagotchi(const char* slot,
+                               const uint8_t* bytes, int32_t len);
+void openbirds_load_background(const char* slot,
+                               const uint8_t* bytes, int32_t len);
+void openbirds_set_rng_seed(uint64_t seed);
+void openbirds_begin_celebration(double now_seconds, double duration_s);
+
+// Defensive: drop straight to Home without playing the celebration.
+// Used by tests; the production path always goes via
+// `begin_celebration`.
+void openbirds_force_home(void);
+
+// Diagnostic for the bridge log line — returns the active slot
+// stem for the current seed, or an empty string if no tamagotchi
+// has loaded yet. Caller frees with `openbirds_free`.
+const char* openbirds_active_slot(void);
+
 #ifdef __cplusplus
 }
 #endif

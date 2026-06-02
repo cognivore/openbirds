@@ -349,7 +349,42 @@ build-bench-compose:
 bench-compose: build-bench-compose
     ./build/bench-compose host/ios/Resources 10
 
-# --- e2e UI test (Stage 5/scroll) ------------------------------------------
+# --- e2e UI tests ----------------------------------------------------------
+
+# Tap each of the three home-screen task cards and pull the four
+# attached screenshots out of the resulting xcresult into
+# build/ios-sim/ui-shots/ so a human can eyeball the indicator-
+# fill progression. Demonstrates tap → bridge → toggle-task →
+# framebuffer-rendered card-pixel green dot — no SwiftUI controls
+# in the loop.
+test-ui-cards: ios-build
+    @APP=$(find build/ios-derived/Build/Products/Debug-iphonesimulator -name 'openbirds.app' -type d | head -1); \
+    [ -n "$APP" ] || { echo "openbirds.app not found" >&2; exit 1; }; \
+    DEV_ID=$(xcrun simctl list devices available | awk -F '[()]' '/iPhone 17 Pro \(/ {print $2; exit}'); \
+    [ -n "$DEV_ID" ] || { echo "no iPhone 17 Pro simulator" >&2; exit 1; }; \
+    echo ">>> booting $DEV_ID"; \
+    xcrun simctl boot "$DEV_ID" 2>/dev/null || true; \
+    xcrun simctl bootstatus "$DEV_ID" -b; \
+    echo ">>> running card-tap UI test"; \
+    xcodebuild test \
+      -project host/ios/openbirds.xcodeproj \
+      -scheme openbirds \
+      -sdk iphonesimulator \
+      -destination "id=$DEV_ID" \
+      -derivedDataPath build/ios-derived \
+      -only-testing:openbirdsUITests/ScrollAndCloseTest/testTapCardsTogglesIndicators \
+      CODE_SIGNING_ALLOWED=NO | tail -10; \
+    echo ">>> pulling attachments"; \
+    XCRESULT=$(ls -dt build/ios-derived/Logs/Test/*.xcresult | head -1); \
+    mkdir -p build/ios-sim/ui-shots; \
+    xcrun xcresulttool export attachments --path "$XCRESULT" --output-path build/ios-sim/ui-shots/ > /dev/null; \
+    python3 -c 'import json,sys,os,shutil; \
+m=json.load(open("build/ios-sim/ui-shots/manifest.json")); \
+[ (shutil.copy("build/ios-sim/ui-shots/"+a["exportedFileName"], \
+                "build/ios-sim/ui-shots/"+(a.get("suggestedHumanReadableName") or a["exportedFileName"]))) \
+  for e in m for a in e.get("attachments",[]) if a.get("exportedFileName") ]'; \
+    echo "screenshots: build/ios-sim/ui-shots/card-*.png"; \
+    ls build/ios-sim/ui-shots/card-*.png
 
 # Run the XCUITest that scrolls to the bottom and taps CLOSE,
 # verifying the app exits. Boots an iPhone 17 Pro simulator.

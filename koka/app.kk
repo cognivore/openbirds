@@ -39,6 +39,9 @@ import truetype/registry
 import truetype/glyph_cache
 import window/article
 import window/article/typography_demo
+import window/home
+import tamagotchi
+import tasks
 import viewport
 
 // --- scrollable-page cache (process-lifetime ref) -------------------------
@@ -257,13 +260,277 @@ fun render-frame-pixels(f : decoded-frame, w : width, h : height) : vector<int>
 
 pub fun frame-rgba(s : session, sc : scene-cell, fonts : font-registry, gc : glyph-cache,
                    sr : scroll-cell, pc : page-cache, spec : spec-cell,
+                   tr : tamagotchi-roster, bg : background-roster,
+                   seed : seed-cell, tc : tasks-cell,
                    now : float64)
         : <pure, read<global>, write<global>> vector<int>
+  // Advance the scene clock before rendering so a Celebrating →
+  // Idle transition happens on the same tick the deadline lands;
+  // without this, the user perceives a one-frame freeze at the
+  // transition.
+  tick-scene(sc, now)
   val vs = get-spec(spec)
   val w = Width(vs.vp.width)
   val h = Height(vs.vp.height)
-  if show-gif(sc) then render-playing(s, now, w, h, vs.vp.width, vs.vp.height)
-  else render-idle(fonts, gc, sr, pc, vs, now, w, h)
+  match !sc
+    Loading           -> render-loading-placeholder(vs, w, h)
+    Celebrating(_, _) -> render-active-tamagotchi(tr, bg, seed, tc, vs, now, w, h, True)
+    Idle              -> render-home(tr, bg, seed, tc, vs, now, w, h)
+    Exiting(_)        -> render-active-tamagotchi(tr, bg, seed, tc, vs, now, w, h, True)
+    Done              -> render-loading-placeholder(vs, w, h)
+
+// --- new-tamagotchi-home render paths --------------------------------------
+//
+// Loading: neutral diagonal-gradient so the user can tell the app
+// is alive while assets are streaming in. ~250µs at @3x; tiny.
+fun render-loading-placeholder(vs : viewport-spec, w : width, h : height) : vector<int>
+  val ww = vs.vp.width
+  val hh = vs.vp.height
+  build-pixels(w, h) fn(x, y)
+    val nx = if ww <= 0 then 0 else (x.col * 100) / ww
+    val ny = if hh <= 0 then 0 else (y.row * 100) / hh
+    pack-rgba(40 + nx / 10, 44 + ny / 10, 56, 255)
+
+// Active-tamagotchi fullscreen path. Used for Celebrating (intro
+// cheer) and Exiting (legacy goodbye); `cheer` forces level=3 so
+// the loop plays at maximum speed regardless of how many tasks
+// the user has checked. The active scene's background (if loaded)
+// fills the viewport via aspect-cover, then the sprite is overlaid
+// aspect-fit so portraits don't stretch.
+fun render-active-tamagotchi(tr : tamagotchi-roster, bg : background-roster,
+                             seed : seed-cell, tc : tasks-cell,
+                             vs : viewport-spec, now : float64,
+                             w : width, h : height, cheer : bool)
+        : <pure, read<global>, write<global>> vector<int>
+  val sd = get-seed(seed)
+  match pick-active(tr, sd)
+    Nothing -> render-loading-placeholder(vs, w, h)
+    Just((_, g)) ->
+      val ts    = get-tasks(tc)
+      val level = if cheer then 3 else happiness-level(ts)
+      val t     = now * speed-mul(level)
+      val sf    = current-frame-of(g, t)
+      val bf    = match pick-active-background(tr, bg, sd)
+        Just(bgg) -> current-frame-of(bgg, now)
+        Nothing   -> Nothing
+      render-fullscreen-pixels(sf, bf, vs, w, h)
+
+// Pre-resolved aspect-fit box for a sprite in a viewport. Saves
+// redoing the scale math in the per-pixel loop, and keeps
+// `render-fullscreen-pixels` readable without juggling a 6-tuple
+// (Koka stdlib's `tuple<…>` only covers small arities).
+value struct fit-box
+  dx0 : int
+  dy0 : int
+  dw  : int
+  dh  : int
+  gw  : int
+  gh  : int
+
+val empty-fit-box : fit-box = Fit-box(0, 0, 0, 0, 0, 0)
+
+fun sprite-fit-box(sprite : maybe<decoded-frame>, ww : int, hh : int) : fit-box
+  match sprite
+    Nothing -> empty-fit-box
+    Just(f) ->
+      val gw   = f.width.pixels
+      val gh   = f.height.pixels
+      val sx10 = if gw <= 0 then 1 else (ww * 8) / gw   // 80% of viewport
+      val sy10 = if gh <= 0 then 1 else (hh * 8) / gh
+      val s10  = if sx10 < sy10 then sx10 else sy10
+      val dw   = (gw * s10) / 10
+      val dh   = (gh * s10) / 10
+      Fit-box((ww - dw) / 2, (hh - dh) / 2, dw, dh, gw, gh)
+
+// Single fullscreen compositor: bg (aspect-cover) + sprite
+// (aspect-fit) + fallback sky if neither has loaded.
+fun render-fullscreen-pixels(sprite : maybe<decoded-frame>,
+                             bg-frame : maybe<decoded-frame>,
+                             vs : viewport-spec,
+                             w : width, h : height) : vector<int>
+  val ww  = vs.vp.width
+  val hh  = vs.vp.height
+  val sky = pack-rgba(184, 218, 224, 255)
+  val fb  = sprite-fit-box(sprite, ww, hh)
+  build-pixels(w, h) fn(x, y)
+    val xx = x.col
+    val yy = y.row
+    val base = match bg-frame
+      Just(b) -> bg-cover-pixel(b, ww, hh, xx, yy, sky)
+      Nothing -> sky
+    match sprite
+      Nothing -> base
+      Just(f) ->
+        if xx < fb.dx0 || xx >= fb.dx0 + fb.dw ||
+           yy < fb.dy0 || yy >= fb.dy0 + fb.dh then base
+        else
+          val gx = ((xx - fb.dx0) * fb.gw) / fb.dw
+          val gy = ((yy - fb.dy0) * fb.gh) / fb.dh
+          match f.pixels.at(gy * fb.gw + gx)
+            Just(pi) -> match f.palette.at(pi)
+              Just(c) -> c
+              Nothing -> base
+            Nothing -> base
+
+// Aspect-cover bg sampler. Zooms the bg so it FILLS the viewport
+// (instead of fitting) — there are no letterbox bars; some bg
+// content may be cropped at the edges.
+fun bg-cover-pixel(f : decoded-frame, vw : int, vh : int,
+                   xx : int, yy : int, fallback : int) : int
+  val gw = f.width.pixels
+  val gh = f.height.pixels
+  if gw <= 0 || gh <= 0 then fallback
+  else
+    val sx10 = (vw * 10) / gw
+    val sy10 = (vh * 10) / gh
+    val s10  = if sx10 > sy10 then sx10 else sy10
+    val dw   = (gw * s10) / 10
+    val dh   = (gh * s10) / 10
+    val dx0  = (vw - dw) / 2
+    val dy0  = (vh - dh) / 2
+    val gx   = ((xx - dx0) * gw) / dw
+    val gy   = ((yy - dy0) * gh) / dh
+    if gx < 0 || gx >= gw || gy < 0 || gy >= gh then fallback
+    else match f.pixels.at(gy * gw + gx)
+      Just(pi) -> match f.palette.at(pi)
+        Just(c) -> c
+        Nothing -> fallback
+      Nothing -> fallback
+
+// Home composition. Pre-resolves the active sprite + background
+// frames ONCE so the per-pixel closure stays pure (build-pixels
+// requires a total callback). The frame, the layout, and the
+// happiness-driven bounce offset are then captured and read by
+// `home-pixel-at`.
+fun render-home(tr : tamagotchi-roster, bg : background-roster,
+                seed : seed-cell, tc : tasks-cell,
+                vs : viewport-spec, now : float64,
+                w : width, h : height)
+        : <pure, read<global>, write<global>> vector<int>
+  val layout = lay-out-home(vs, default-theme())
+  val ts     = get-tasks(tc)
+  val sd     = get-seed(seed)
+  val level  = happiness-level(ts)
+  val active = pick-active(tr, sd)
+  val frame  = match active
+    Just((_, g)) -> current-frame-of(g, now * speed-mul(level))
+    Nothing      -> Nothing
+  val bg-frame = match pick-active-background(tr, bg, sd)
+    Just(bgg) -> current-frame-of(bgg, now)
+    Nothing   -> Nothing
+  val arena-h = rect-h(layout.arena-rect)
+  val bounce  = bounce-y-offset(level, arena-h, now)
+  val ww      = vs.vp.width
+  build-pixels(w, h) fn(x, y)
+    home-pixel-at(layout, ts, bg-frame, frame, bounce, ww, x.col, y.row)
+
+// Per-pixel home-screen sampler. Two regions:
+//   - above the horizon  → arena (bg + sprite)
+//   - below the horizon  → card panel (floor strip + cards)
+//
+// The background is sampled aspect-cover across the FULL
+// viewport so the bottom of the bg is partially occluded by
+// the card panel — this matches how scene backgrounds feel in
+// games (the cards sit as a UI overlay on a continuous world).
+fun home-pixel-at(layout : home-layout, ts : task-state,
+                  bg-frame : maybe<decoded-frame>,
+                  frame : maybe<decoded-frame>, bounce : int,
+                  vw : int, xx : int, yy : int) : int
+  if yy < layout.floor-y then
+    arena-pixel(layout, bg-frame, frame, bounce, vw, xx, yy)
+  else
+    card-region-pixel(layout, ts, xx, yy)
+
+fun arena-pixel(layout : home-layout, bg-frame : maybe<decoded-frame>,
+                frame : maybe<decoded-frame>, bounce : int,
+                vw : int, xx : int, yy : int) : int
+  val base = match bg-frame
+    Just(b) -> bg-cover-pixel(b, vw, layout.floor-y, xx, yy, layout.bg-sky)
+    Nothing -> layout.bg-sky
+  match frame
+    Nothing -> base
+    Just(f) ->
+      val gw = f.width.pixels
+      val gh = f.height.pixels
+      val ar = layout.arena-rect
+      val rw = rect-w(ar)
+      val rh = rect-h(ar)
+      val target-h-raw = (rh * 70) / 100
+      val target-h     = if target-h-raw < 32 then 32 else target-h-raw
+      val target-w     = if gh <= 0 then target-h
+                         else (gw * target-h) / gh
+      val dx0 = ar.x0 + (rw - target-w) / 2
+      val dy0 = layout.floor-y - target-h + bounce
+      if xx < dx0 || xx >= dx0 + target-w || yy < dy0 || yy >= dy0 + target-h then
+        base
+      else
+        val gx = ((xx - dx0) * gw) / target-w
+        val gy = ((yy - dy0) * gh) / target-h
+        match f.pixels.at(gy * gw + gx)
+          Just(pi) -> match f.palette.at(pi)
+            Just(c) -> c
+            Nothing -> base
+          Nothing -> base
+
+fun card-region-pixel(layout : home-layout, ts : task-state,
+                      xx : int, yy : int) : int
+  match hit-card(layout, xx, yy)
+    Just(ix) -> card-pixel(layout, ts, ix, xx, yy)
+    Nothing  -> layout.bg-floor
+
+// Card painter. Three visual elements:
+//   - a soft border (ink-dim on the rectangle outline);
+//   - the card's tint as the fill;
+//   - a circular indicator near the right edge that fills with
+//     `accent` when the task is done.
+fun card-pixel(layout : home-layout, ts : task-state, ix : int,
+               xx : int, yy : int) : int
+  val rect = match list-at(layout.card-rects, ix)
+    Just(r) -> r
+    Nothing -> Rect(0, 0, 0, 0)
+  val done = task-done(ts, ix)
+  val tint = card-tint-at(layout, ix)
+  val rh   = rect.y1 - rect.y0
+  val ind-r = rh / 5
+  val cx    = rect.x1 - ind-r * 3
+  val cy    = (rect.y0 + rect.y1) / 2
+  val dx    = xx - cx
+  val dy    = yy - cy
+  val in-indicator      = dx * dx + dy * dy <= ind-r * ind-r
+  val in-indicator-ring = dx * dx + dy * dy <= (ind-r + 2) * (ind-r + 2)
+  val border-thick = 2
+  val on-border = xx < rect.x0 + border-thick || xx >= rect.x1 - border-thick ||
+                  yy < rect.y0 + border-thick || yy >= rect.y1 - border-thick
+  if in-indicator then
+    if done then layout.accent else layout.bg-cards
+  elif in-indicator-ring then
+    layout.ink-dim
+  elif on-border then
+    layout.ink-dim
+  else
+    tint
+
+// --- home tap routing ------------------------------------------------------
+//
+// Bridge calls this for every tap; in the Idle (Home) scene it
+// computes the layout for the current viewport-spec, hit-tests
+// the card rects, and toggles the matching task. In any other
+// scene the tap is silently dropped — Loading shouldn't accept
+// input, Celebrating dismisses on auto-deadline, Exiting / Done
+// are leaving the app.
+pub fun handle-home-tap(sc : scene-cell, tc : tasks-cell, spec : spec-cell,
+                        vx : int, vy : int)
+        : <read<global>, write<global>> ()
+  match !sc
+    Idle ->
+      val vs = get-spec(spec)
+      if not(is-on-screen(vs, vx, vy)) then ()
+      else
+        val layout = lay-out-home(vs, default-theme())
+        match hit-card(layout, vx, vy)
+          Just(ix) -> toggle-task(tc, ix)
+          Nothing  -> ()
+    _ -> ()
 
 // Idle screen = composed scrollable typography page. Cache key
 // includes the full viewport-spec so any platform-presentation
