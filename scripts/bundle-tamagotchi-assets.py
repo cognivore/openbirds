@@ -63,10 +63,21 @@ FFM = "flying-forest-monsters-2d-pixel-art/FlyingForestEnemies_PREMIUM"
 # --- TAMAGOTCHI ROSTER ---------------------------------------------------
 #
 # Each entry: per-mood horizontal sprite strip + frame width. The
-# strip height IS the frame height. `frames` caps the number of
+# strip height IS the frame height. `frame_cap` caps the number of
 # frames consumed from the strip (clamped to what's actually
 # available); a small cap on long Attack strips keeps the loop
 # tight on the home screen.
+#
+# IDLE TIMING — classic tamagotchi pattern: the idle is a 2-frame
+# loop at ~600 ms/frame, giving a ~1.2 s breathe cycle. The forest-
+# monster Idle.png strips are action-game idles (7-8 frames at 7
+# fps), which on a tamagotchi home screen reads as a panicking,
+# convulsing pet rather than a content one. Cropping to the first
+# 2 frames + slowing to ~2 fps lands the calmer breath/blink pacing
+# you actually want when nothing is happening; the programmatic
+# `bounce-y-offset` in window/home.kk supplies the subtle vertical
+# motion on top of that. Happy/ecstatic stay at their native action-
+# game tempos because those moods are *supposed* to be lively.
 #
 # Each tamagotchi gets a paired background-slot; the bridge loads
 # both rosters at launch and the per-launch seed picks one
@@ -83,8 +94,8 @@ TAMAGOTCHIS = [
             "happy":    f"{FM}/Mushroom/Mushroom without VFX/Mushroom-Run.png",
             "ecstatic": f"{FM}/Mushroom/Mushroom without VFX/Mushroom-Attack.png",
         },
-        "delay_ms": {"idle": 140, "happy": 90, "ecstatic": 70},
-        "frame_cap": {"idle": 7, "happy": 8, "ecstatic": 10},
+        "delay_ms": {"idle": 600, "happy": 90, "ecstatic": 70},
+        "frame_cap": {"idle": 2, "happy": 8, "ecstatic": 10},
     },
     {
         "slot": "bush-monster",
@@ -96,8 +107,8 @@ TAMAGOTCHIS = [
             "happy":    f"{FM}/Bush_Monster/Bush Monster without VFX/Bush_Monster-Run.png",
             "ecstatic": f"{FM}/Bush_Monster/Bush Monster without VFX/Bush_Monster-Attack.png",
         },
-        "delay_ms": {"idle": 140, "happy": 90, "ecstatic": 70},
-        "frame_cap": {"idle": 8, "happy": 7, "ecstatic": 12},
+        "delay_ms": {"idle": 600, "happy": 90, "ecstatic": 70},
+        "frame_cap": {"idle": 2, "happy": 7, "ecstatic": 12},
     },
     {
         "slot": "green-slime",
@@ -109,8 +120,8 @@ TAMAGOTCHIS = [
             "happy":    f"{FM}/Slime/Green Slime/Green Slime without VFX/Green_Slime-Run.png",
             "ecstatic": f"{FM}/Slime/Green Slime/Green Slime without VFX/Green_Slime-Attack_Ground.png",
         },
-        "delay_ms": {"idle": 150, "happy": 100, "ecstatic": 80},
-        "frame_cap": {"idle": 7, "happy": 6, "ecstatic": 12},
+        "delay_ms": {"idle": 600, "happy": 100, "ecstatic": 80},
+        "frame_cap": {"idle": 2, "happy": 6, "ecstatic": 12},
     },
     {
         "slot": "shroom-walker",
@@ -122,8 +133,8 @@ TAMAGOTCHIS = [
             "happy":    f"{FFM}/Enemy3/Enemy3-Movement-In-Animation/Enemy3-Fly.png",
             "ecstatic": f"{FFM}/Enemy3/Enemy3-Movement-In-Animation/Enemy3-AttackSmashStart.png",
         },
-        "delay_ms": {"idle": 130, "happy": 90, "ecstatic": 70},
-        "frame_cap": {"idle": 8, "happy": 8, "ecstatic": 12},
+        "delay_ms": {"idle": 600, "happy": 90, "ecstatic": 70},
+        "frame_cap": {"idle": 2, "happy": 8, "ecstatic": 12},
     },
     {
         "slot": "thorn-dragon",
@@ -135,8 +146,8 @@ TAMAGOTCHIS = [
             "happy":    f"{FFM}/Enemy1/Enemy1-Movement-In-Animation/Enemy1-Charge.png",
             "ecstatic": f"{FFM}/Enemy1/Enemy1-Movement-In-Animation/Enemy1-AttackV2.png",
         },
-        "delay_ms": {"idle": 140, "happy": 110, "ecstatic": 70},
-        "frame_cap": {"idle": 6, "happy": 4, "ecstatic": 12},
+        "delay_ms": {"idle": 600, "happy": 110, "ecstatic": 70},
+        "frame_cap": {"idle": 2, "happy": 4, "ecstatic": 12},
     },
     {
         "slot": "leaf-wyrm",
@@ -148,8 +159,8 @@ TAMAGOTCHIS = [
             "happy":    f"{FFM}/Enemy2/Enemy2-Movement-In-Animation/Enemy2-BoostUp.png",
             "ecstatic": f"{FFM}/Enemy2/Enemy2-Movement-In-Animation/Enemy2-AttackV1.png",
         },
-        "delay_ms": {"idle": 140, "happy": 90, "ecstatic": 70},
-        "frame_cap": {"idle": 8, "happy": 10, "ecstatic": 12},
+        "delay_ms": {"idle": 600, "happy": 90, "ecstatic": 70},
+        "frame_cap": {"idle": 2, "happy": 10, "ecstatic": 12},
     },
 ]
 
