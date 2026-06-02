@@ -209,23 +209,20 @@ pub fun lay-out-home(vs : viewport-spec, theme : home-theme) : home-layout
     accent     = theme.accent
   )
 
-// === happiness → animation modulation ===================================
+// === happiness → animation tempo modulation =============================
 //
-// The MVP couples "tasks done" → "tamagotchi gets visibly happier"
-// through animation amplification rather than a numeric score.
-// Two knobs:
+// The home screen no longer modulates the per-frame motion via a
+// shake or a speed knob on a continuous loop. Instead it uses
+// `mood_sequencer/mood-at` to swap the GIF *itself* — idle nearly
+// always, with happy / ecstatic bursting now and then, anchored
+// to the ground pixel line with no bounce. Reads as a content
+// pet rather than a panicked one.
 //
-//   - speed-mul: multiplier on `now` before sampling the GIF.
-//     A higher multiplier = the same loop plays faster = the
-//     creature looks more lively. Capped so a fully-celebratory
-//     pet doesn't strobe.
-//
-//   - bounce: vertical amplitude (in pixels) of a sin-driven hop,
-//     centered on the horizon line. Zero at level 0, growing to
-//     a generous hop at level 3.
-//
-// Both functions are total — no clocks, no state, just integer /
-// float math on the level + now.
+// `speed-mul` is kept ONLY for the celebration overlay scene,
+// where we want the ecstatic loop to play visibly faster than its
+// native tempo for the brief 3-second peak. The home renderer
+// passes raw `now` through to `current-frame-of` so each per-mood
+// GIF plays at its authored frame delay.
 
 pub fun speed-mul(level : int) : float64
   match level
@@ -233,33 +230,3 @@ pub fun speed-mul(level : int) : float64
     1 -> 1.20
     2 -> 1.45
     _ -> 1.75
-
-pub fun bounce-amplitude-px(level : int, arena-h : int) : int
-  // Amplitude is a per-mille of the arena height so it scales with
-  // the device. Levels 0..3 → 0%, 1.5%, 3%, 5%.
-  val pml = match level
-    0 -> 0
-    1 -> 15
-    2 -> 30
-    _ -> 50
-  (arena-h * pml) / 1000
-
-// Two-pi for the bounce phase.
-val two-pi : float64 = 6.283185307179586
-
-// Frequency-modulated by happiness — happier = quicker hops.
-pub fun bounce-y-offset(level : int, arena-h : int, now : float64) : int
-  val amp = bounce-amplitude-px(level, arena-h)
-  if amp == 0 then 0
-  else
-    val hz = match level
-      0 -> 0.0
-      1 -> 1.4
-      2 -> 1.8
-      _ -> 2.4
-    val phase = two-pi * hz * now
-    val s     = phase.sin
-    // s ∈ [-1, 1]; we want only upward hops so we use |s| and
-    // negate to move sprite up.
-    val mag   = if s < 0.0 then 0.0 - s else s
-    (mag * amp.float64).floor.int * (0 - 1)

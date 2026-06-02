@@ -41,6 +41,7 @@ import window/article
 import window/article/typography_demo
 import window/home
 import tamagotchi
+import mood_sequencer
 import tasks
 import viewport
 
@@ -404,9 +405,10 @@ fun bg-cover-pixel(f : decoded-frame, vw : int, vh : int,
 // Home composition. Pre-resolves the active sprite + background
 // frames ONCE so the per-pixel closure stays pure (build-pixels
 // requires a total callback). The sprite GIF is chosen by the
-// current happiness-level → mood-name mapping (idle/happy/
-// ecstatic), so the user perceives a real animation switch as
-// task cards fill up, not just a speed knob on one loop.
+// time-sliced `mood-sequencer/mood-at` so the pet is idle nearly
+// always and bursts happy / ecstatic now and then; this matches
+// the classic tamagotchi pacing and stops the continuous-loop
+// feel that read as "convulsing pet" at higher levels.
 fun render-home(tr : tamagotchi-roster, bg : background-roster,
                 seed : seed-cell, tc : tasks-cell,
                 vs : viewport-spec, now : float64,
@@ -416,20 +418,18 @@ fun render-home(tr : tamagotchi-roster, bg : background-roster,
   val ts     = get-tasks(tc)
   val sd     = get-seed(seed)
   val level  = happiness-level(ts)
-  val mood   = mood-name(level)
+  val mood   = mood-at(level, now)
   val frame  = match pick-active(tr, sd)
     Nothing   -> Nothing
     Just(spec) -> match lookup-mood-gif(tr, spec, mood)
-      Just(g)  -> current-frame-of(g, now * speed-mul(level))
+      Just(g)  -> current-frame-of(g, now)
       Nothing  -> Nothing
   val bg-frame = match pick-active-background(tr, bg, sd)
     Just(bgg) -> current-frame-of(bgg, now)
     Nothing   -> Nothing
-  val arena-h = rect-h(layout.arena-rect)
-  val bounce  = bounce-y-offset(level, arena-h, now)
   val ww      = vs.vp.width
   build-pixels(w, h) fn(x, y)
-    home-pixel-at(layout, ts, bg-frame, frame, bounce, ww, x.col, y.row)
+    home-pixel-at(layout, ts, bg-frame, frame, ww, x.col, y.row)
 
 // Per-pixel home-screen sampler. Two regions:
 //   - above the horizon  → arena (bg + sprite)
@@ -441,15 +441,15 @@ fun render-home(tr : tamagotchi-roster, bg : background-roster,
 // games (the cards sit as a UI overlay on a continuous world).
 fun home-pixel-at(layout : home-layout, ts : task-state,
                   bg-frame : maybe<decoded-frame>,
-                  frame : maybe<decoded-frame>, bounce : int,
+                  frame : maybe<decoded-frame>,
                   vw : int, xx : int, yy : int) : int
   if yy < layout.floor-y then
-    arena-pixel(layout, bg-frame, frame, bounce, vw, xx, yy)
+    arena-pixel(layout, bg-frame, frame, vw, xx, yy)
   else
     card-region-pixel(layout, ts, xx, yy)
 
 fun arena-pixel(layout : home-layout, bg-frame : maybe<decoded-frame>,
-                frame : maybe<decoded-frame>, bounce : int,
+                frame : maybe<decoded-frame>,
                 vw : int, xx : int, yy : int) : int
   val base = match bg-frame
     Just(b) -> bg-cover-pixel(b, vw, layout.floor-y, xx, yy, layout.bg-sky)
@@ -475,7 +475,10 @@ fun arena-pixel(layout : home-layout, bg-frame : maybe<decoded-frame>,
       val target-w = (gw * s100) / 100
       val target-h = (gh * s100) / 100
       val dx0 = ar.x0 + (rw - target-w) / 2
-      val dy0 = layout.floor-y - target-h + bounce
+      // Anchor sprite bottom AT the floor pixel line — no bounce,
+      // no shake. The time-sliced mood sequencer supplies all the
+      // motion the pet should have on the home screen.
+      val dy0 = layout.floor-y - target-h
       if xx < dx0 || xx >= dx0 + target-w || yy < dy0 || yy >= dy0 + target-h then
         base
       else
