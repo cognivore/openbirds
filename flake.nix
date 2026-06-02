@@ -34,6 +34,12 @@
             rclone
             unzip
             jq
+            ffmpeg
+            # Asset-composition toolchain — slices Mana Seed sprite
+            # sheets into per-frame animations, lays out wang tiles
+            # into scene backgrounds, emits GIFs with proper
+            # transparency. Used by `just bundle-tamagotchi-assets`.
+            (python3.withPackages (ps: with ps; [ pillow numpy ]))
           ];
 
           shellHook = ''
